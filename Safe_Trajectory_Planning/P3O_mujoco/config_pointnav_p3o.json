@@ -1,0 +1,51 @@
+{
+  "env": {
+    "env_id": "SafetyPointButton1-v0",
+    "max_steps": 1000,
+    "action_scale": 1.0,
+    "color_overrides": {
+      "goal": [0.0, 1.0, 0.0, 1.0],
+      "pillar": [0.0, 0.0, 1.0, 1.0],
+      "agent": [1.0, 0.0, 0.0, 1.0],
+      "robot": [1.0, 0.0, 0.0, 1.0],
+      "obstacle": [0.0, 0.0, 1.0, 1.0],
+      "hazard": [0.0, 0.0, 1.0, 1.0],
+      "wall": [0.0, 0.0, 1.0, 1.0]
+    }
+  },
+  "cmdp": {
+    "cost_limits": [
+      2
+    ],
+    "reward_scale": 1.0,
+    "cost_scales": [
+      1.0
+    ]
+  },
+  "algo": {
+    "gamma": 0.999,
+    "lam": 0.97,
+    "clip_ratio": 0.2,
+    "kappa": 100.0,  
+    "target_kl": 0.01,
+    "pi_lr": 0.0003,
+    "vf_lr": 0.001,
+    "train_pi_iters": 80,
+    "train_v_iters": 80,
+    "max_grad_norm": 0.5,
+    "steps_per_epoch": 30000,
+    "max_ep_len": 1000,
+    "hidden_sizes": [
+      255,
+      255
+    ],
+    "entropy_coef": 0.0,
+    "normalize_advantages": true
+  },
+  "training": {
+    "total_steps": 10000000,
+    "eval_every_epochs": 10,
+    "eval_max_steps": 1000,
+    "seed": 0
+  }
+}

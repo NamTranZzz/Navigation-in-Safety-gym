@@ -1,0 +1,52 @@
+{
+  "env": {
+    "env_id": "SafetyPointButton1-v0",
+    "max_steps": 1000,
+    "action_scale": 1.0
+  },
+  "cmdp": {
+    "cost_limits": [
+      5
+    ],
+    "reward_scale": 1.0,
+    "cost_scales": [
+      1.0
+    ]
+  },
+  "algo": {
+    "gamma": 0.995,
+    "lam": 0.97,
+    "clip_ratio": 0.2,
+    "target_kl": 0.01,
+    "pi_lr": 0.0003,
+    "vf_lr": 0.001,
+    "train_pi_iters": 20,
+    "train_v_iters": 20,
+    "max_grad_norm": 0.5,
+    "steps_per_epoch": 30000,
+    "max_ep_len": 1000,
+    "num_roll_out": 15,
+    "hidden_sizes": [
+      255,
+      255
+    ],
+    "entropy_coef": 0.01,
+    "normalize_advantages": true,
+    "dual_lr": 0.1,
+    "dual_tau": 0.01,
+    "lambda_init": 0.0,
+    "lambda_max": 1000.0,
+    "dual_scale_one_minus_gamma": false,
+    "anchor_kl_coef": 0.1
+  },
+  "training": {
+    "seed": 0,
+    "total_steps": 10000000,
+    "epochs": 100,
+    "checkpoint_every": 20,
+    "eval_episodes": 5,
+    "eval_parallel": 1,
+    "eval_max_steps": 1000,
+    "rollout_parallel": 16
+  }
+}

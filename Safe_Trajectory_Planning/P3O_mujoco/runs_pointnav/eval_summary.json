@@ -1,0 +1,53 @@
+{
+  "checkpoint": "/Users/trannam/Downloads/Code/Safe_Trajectory_Planning/P3O_mujoco/runs_pointnav/ckpt_20260123_173952_epoch_040.pt",
+  "num_episodes": 5,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "return_mean": 15.07310962677002,
+  "return_std": 1.9690275192260742,
+  "cost_mean": 162.1999969482422,
+  "len_mean": 1000.0,
+  "terminated_rate": 0.0,
+  "episodes": [
+    {
+      "EpRet": 18.505439737471537,
+      "EpCost0": 107.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 0
+    },
+    {
+      "EpRet": 12.951281394980146,
+      "EpCost0": 77.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 1
+    },
+    {
+      "EpRet": 15.926739679603394,
+      "EpCost0": 411.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 2
+    },
+    {
+      "EpRet": 13.864772525833418,
+      "EpCost0": 108.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 3
+    },
+    {
+      "EpRet": 14.117316180913425,
+      "EpCost0": 108.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 4
+    }
+  ]
+}

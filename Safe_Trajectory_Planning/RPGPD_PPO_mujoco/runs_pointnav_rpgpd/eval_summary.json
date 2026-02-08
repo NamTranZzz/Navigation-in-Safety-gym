@@ -1,0 +1,53 @@
+{
+  "checkpoint": "/Users/trannam/Downloads/Code/safety-gymnasium/Safe_Trajectory_Planning/RPGPD_PPO_mujoco/runs_pointnav_rpgpd/ckpt_20260208_232021_epoch_250.pt",
+  "num_episodes": 5,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "return_mean": 6.6078619956970215,
+  "return_std": 0.37309595942497253,
+  "cost_mean": 0.800000011920929,
+  "len_mean": 113.5999984741211,
+  "terminated_rate": 1.0,
+  "episodes": [
+    {
+      "EpRet": 6.454040326438401,
+      "EpCost0": 0.0,
+      "EpLen": 58,
+      "Terminated": true,
+      "seed": 0
+    },
+    {
+      "EpRet": 7.179185775635541,
+      "EpCost0": 0.0,
+      "EpLen": 202,
+      "Terminated": true,
+      "seed": 1
+    },
+    {
+      "EpRet": 6.903296287653487,
+      "EpCost0": 0.0,
+      "EpLen": 88,
+      "Terminated": true,
+      "seed": 2
+    },
+    {
+      "EpRet": 6.203905370539789,
+      "EpCost0": 4.0,
+      "EpLen": 169,
+      "Terminated": true,
+      "seed": 3
+    },
+    {
+      "EpRet": 6.298881958073987,
+      "EpCost0": 0.0,
+      "EpLen": 51,
+      "Terminated": true,
+      "seed": 4
+    }
+  ]
+}

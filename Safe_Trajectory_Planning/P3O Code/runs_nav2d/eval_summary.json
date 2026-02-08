@@ -1,0 +1,53 @@
+{
+  "checkpoint": "/Users/trannam/Downloads/Code/Safe Trajectory Planning/P3O Code/runs_nav2d/ckpt_20260113_022622_epoch_1000.pt",
+  "num_episodes": 5,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "return_mean": 237.8666229248047,
+  "return_std": 199.28077697753906,
+  "cost_mean": 49.3590087890625,
+  "len_mean": 697.4000244140625,
+  "terminated_rate": 0.6,
+  "episodes": [
+    {
+      "EpRet": 506.5534380814861,
+      "EpCost0": 28.54642105102539,
+      "EpLen": 215,
+      "Terminated": true,
+      "seed": 0
+    },
+    {
+      "EpRet": 443.952348480816,
+      "EpCost0": 56.80461502075195,
+      "EpLen": 305,
+      "Terminated": true,
+      "seed": 1
+    },
+    {
+      "EpRet": 31.7208266452144,
+      "EpCost0": 50.5376091003418,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 2
+    },
+    {
+      "EpRet": 155.14734591706656,
+      "EpCost0": 51.31620407104492,
+      "EpLen": 967,
+      "Terminated": true,
+      "seed": 3
+    },
+    {
+      "EpRet": 51.959058690816164,
+      "EpCost0": 59.59020233154297,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 4
+    }
+  ]
+}

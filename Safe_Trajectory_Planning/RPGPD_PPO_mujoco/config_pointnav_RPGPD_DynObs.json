@@ -1,0 +1,48 @@
+{
+  "env": {
+    "env_id": "SafetyPointDynObs1-v0",
+    "max_steps": 1000,
+    "action_scale": 1.0,
+    "env_config_overrides": {
+      "reward_conf.goal_time_coef": 0.005
+    }
+  },
+  "cmdp": {
+    "cost_limits": [
+      10
+    ],
+    "reward_scale": 1.0,
+    "cost_scales": [
+      1.0
+    ]
+  },
+  "algo": {
+    "gamma": 0.999,
+    "lam": 0.97,
+    "clip_ratio": 0.05,
+    "target_kl": 0.01,
+    "pi_lr": 0.005,
+    "vf_lr": 0.005,
+    "train_pi_iters": 20,
+    "train_v_iters": 20,
+    "max_grad_norm": 0.5,
+    "steps_per_epoch": 30000,
+    "max_ep_len": 1000,
+    "num_roll_out": null,
+    "hidden_sizes": [
+      255,
+      255
+    ],
+    "entropy_coef": 0.1,
+    "normalize_advantages": true,
+    "dual_lr": 0.01,
+    "dual_tau": 0.1,
+    "lambda_init": 0.0,
+    "lambda_max": 30.0,
+    "dual_scale_one_minus_gamma": false
+  },
+  "training": {
+    "seed": 0,
+    "total_steps": 10000000
+  }
+}

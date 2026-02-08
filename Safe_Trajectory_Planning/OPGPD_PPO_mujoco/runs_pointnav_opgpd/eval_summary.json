@@ -1,0 +1,54 @@
+{
+  "checkpoint": "/Users/trannam/Downloads/Code/Safe_Trajectory_Planning/OPGPD_PPO_mujoco/runs_pointnav_opgpd/ckpt_20260131_135130_epoch_080.pt",
+  "policy": "hat",
+  "num_episodes": 5,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "return_mean": 12.470946311950684,
+  "return_std": 8.626380920410156,
+  "cost_mean": 39.0,
+  "len_mean": 1000.0,
+  "terminated_rate": 0.0,
+  "episodes": [
+    {
+      "EpRet": 19.42649587570236,
+      "EpCost0": 21.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 0
+    },
+    {
+      "EpRet": 9.403108131505808,
+      "EpCost0": 4.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 1
+    },
+    {
+      "EpRet": 23.68171709220592,
+      "EpCost0": 72.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 2
+    },
+    {
+      "EpRet": -1.1863820072090374,
+      "EpCost0": 15.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 3
+    },
+    {
+      "EpRet": 11.029792435319692,
+      "EpCost0": 83.0,
+      "EpLen": 1000,
+      "Terminated": false,
+      "seed": 4
+    }
+  ]
+}

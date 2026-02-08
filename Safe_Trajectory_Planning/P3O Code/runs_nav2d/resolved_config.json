@@ -1,0 +1,70 @@
+{
+  "env": {
+    "world_size": 10.0,
+    "dt": 0.05,
+    "max_steps": 1000,
+    "agent_radius": 0.15,
+    "goal_radius": 0.35,
+    "max_speed": 1.0,
+    "vel_time_constant": 0.25,
+    "num_pillars": 6,
+    "pillar_radius_range": [
+      0.3,
+      0.55
+    ],
+    "num_hazards_static": 0,
+    "hazard_static_radius": 0.25,
+    "num_dynamic_obstacles": 4,
+    "dynamic_obstacle_radius": 0.22,
+    "dynamic_obstacle_speed": 0.55,
+    "boundary_margin": 0.35,
+    "min_obj_separation": 0.12,
+    "num_rays": 16,
+    "sensor_range": 4.5,
+    "normalize_goal_by_world": true,
+    "normalize_vel_by_max_speed": true,
+    "lidar_returns_normalized_distance": true
+  },
+  "cmdp": {
+    "cost_limits": [
+      2.0
+    ],
+    "distance_threshold": 1.0,
+    "reward_scale": 1.0,
+    "cost_scales": [
+      1.0
+    ]
+  },
+  "algo": {
+    "gamma": 0.99,
+    "lam": 0.97,
+    "clip_ratio": 0.2,
+    "kappa": 2.0,
+    "target_kl": 0.01,
+    "pi_lr": 0.0003,
+    "vf_lr": 0.001,
+    "train_pi_iters": 80,
+    "train_v_iters": 80,
+    "max_grad_norm": 0.5,
+    "steps_per_epoch": 30000,
+    "max_ep_len": 1000,
+    "hidden_sizes": [
+      255,
+      255
+    ],
+    "entropy_coef": 0.0,
+    "normalize_advantages": true,
+    "num_roll_out": 15
+  },
+  "training": {
+    "total_steps": 10000000,
+    "eval_every_epochs": 10,
+    "eval_max_steps": 1000,
+    "seed": 0,
+    "epochs": 1000,
+    "checkpoint_every": 20,
+    "eval_episodes": 5,
+    "eval_parallel": 1,
+    "rollout_parallel": 16
+  }
+}
