@@ -124,6 +124,14 @@ button_tasks = {
 }
 __combine(button_tasks, robots, max_episode_steps=1000)
 
+# DynObs Environments
+# ----------------------------------------
+dyn_obs_tasks = {
+    'DynObs0': {},
+    'DynObs1': {},
+}
+__combine(dyn_obs_tasks, robots, max_episode_steps=1000)
+
 
 # Push Environments
 # ----------------------------------------

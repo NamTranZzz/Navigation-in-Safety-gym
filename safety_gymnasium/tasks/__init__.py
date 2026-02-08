@@ -31,6 +31,8 @@ from safety_gymnasium.tasks.safe_navigation.circle.circle_base import CircleBase
 from safety_gymnasium.tasks.safe_navigation.circle.circle_level0 import CircleLevel0
 from safety_gymnasium.tasks.safe_navigation.circle.circle_level1 import CircleLevel1
 from safety_gymnasium.tasks.safe_navigation.circle.circle_level2 import CircleLevel2
+from safety_gymnasium.tasks.safe_navigation.DynObs.button_level0 import DynObsLevel0
+from safety_gymnasium.tasks.safe_navigation.DynObs.button_level1 import DynObsLevel1
 from safety_gymnasium.tasks.safe_navigation.goal.goal_base import GoalBase
 from safety_gymnasium.tasks.safe_navigation.goal.goal_level0 import GoalLevel0
 from safety_gymnasium.tasks.safe_navigation.goal.goal_level1 import GoalLevel1

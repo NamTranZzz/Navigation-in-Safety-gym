@@ -12,11 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Mocap type objects."""
-
-# Extra mocap bodies used for control (equality to object of same name)
-from safety_gymnasium.assets.mocaps.gremlins import Gremlins
-from safety_gymnasium.assets.mocaps.gremlin_vels import GremlinVels
-
-
-MOCAPS_REGISTER = [Gremlins, GremlinVels]
+"""DynObs tasks."""

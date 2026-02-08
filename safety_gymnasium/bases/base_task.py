@@ -79,6 +79,8 @@ class RewardConf:
     reward_orientation_body: str = 'agent'
     reward_exception: float = -10.0
     reward_clip: float = 10
+    goal_time_coef: float = 0.0
+    reward_goal_time_coef: float = 0.0
 
 
 @dataclass
