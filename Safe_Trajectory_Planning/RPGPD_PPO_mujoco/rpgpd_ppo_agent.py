@@ -446,19 +446,28 @@ class RPGPDPPOTrainer:
         seed: Optional[int] = None,
         live: bool = False,
         random_seed_each_rollout: bool = False,
+        rollout_seeds: Optional[List[int]] = None,
     ) -> Dict[str, float]:
         cfg = self.cfg
         ep_rets: List[float] = []
         ep_costs: List[np.ndarray] = []
         ep_lens: List[int] = []
 
-        first_seed = int(np.random.randint(0, 2**31 - 1)) if random_seed_each_rollout else seed
+        rollouts_remaining = int(cfg.num_roll_out) if cfg.num_roll_out is not None else 1
+        seed_idx = 0
+        if rollout_seeds is not None:
+            if len(rollout_seeds) < rollouts_remaining:
+                raise ValueError(
+                    f"rollout_seeds length {len(rollout_seeds)} is smaller than num_roll_out={rollouts_remaining}",
+                )
+            first_seed = int(rollout_seeds[seed_idx])
+            seed_idx += 1
+        else:
+            first_seed = int(np.random.randint(0, 2**31 - 1)) if random_seed_each_rollout else seed
         obs, info = self.env.reset(seed=first_seed)
         ep_ret = 0.0
         ep_cost = np.zeros((len(self.cost_limits),), dtype=np.float32)
         ep_len = 0
-
-        rollouts_remaining = int(cfg.num_roll_out) if cfg.num_roll_out is not None else 1
 
         while True:
             act, logp, v_r, v_c = self.agent.act(obs, deterministic=False)
@@ -488,7 +497,11 @@ class RPGPDPPOTrainer:
                 if rollouts_remaining <= 0:
                     break
 
-                next_seed = int(np.random.randint(0, 2**31 - 1)) if random_seed_each_rollout else None
+                if rollout_seeds is not None:
+                    next_seed = int(rollout_seeds[seed_idx])
+                    seed_idx += 1
+                else:
+                    next_seed = int(np.random.randint(0, 2**31 - 1)) if random_seed_each_rollout else None
                 obs, info = self.env.reset(seed=next_seed)
                 ep_ret = 0.0
                 ep_cost[:] = 0.0

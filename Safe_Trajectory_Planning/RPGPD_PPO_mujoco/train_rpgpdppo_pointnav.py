@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +29,8 @@ if str(_REPO_ROOT) not in sys.path:
 from mujoco_env import MujocoPointNavEnv, MujocoPointNavConfig
 from cmdp_wrapper import RewardCostWrapper, CMDPConfig
 from rpgpd_ppo_agent import RPGPDPPOAgent, RPGPDPPOTrainer, RPGPDPPOConfig
+
+HISTORY_FILE = "train_history.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +56,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable per-rollout random seeding and use deterministic seed schedule",
     )
+    p.add_argument(
+        "--fixed_rollout_seed_range",
+        type=str,
+        default=None,
+        help='Use the same rollout seed list every epoch, e.g. "1-120" or "1,2,3,4".',
+    )
 
     # outputs
     p.add_argument("--save_dir", type=str, default="runs_pointnav_rpgpd")
@@ -65,13 +74,65 @@ def load_config(path: str) -> Dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def save_metric_plot(save_dir: Path, values: list[float], name: str, ylabel: str) -> None:
+def parse_seed_spec(spec: str) -> list[int]:
+    s = str(spec).strip()
+    if not s:
+        raise ValueError("empty seed spec")
+    if "-" in s and "," not in s:
+        lo_s, hi_s = s.split("-", 1)
+        lo = int(lo_s.strip())
+        hi = int(hi_s.strip())
+        if hi < lo:
+            raise ValueError(f"invalid seed range: {spec}")
+        return [int(x) for x in range(lo, hi + 1)]
+    out: list[int] = []
+    for tok in s.split(","):
+        tok = tok.strip()
+        if tok:
+            out.append(int(tok))
+    if not out:
+        raise ValueError(f"invalid seed list: {spec}")
+    return out
+
+
+def expand_rollout_seeds(seed_list: list[int], rollout_total: int) -> list[int]:
+    if rollout_total <= 0:
+        return []
+    if len(seed_list) == 0:
+        raise ValueError("fixed_rollout_seed_range produced an empty seed list")
+    return [int(seed_list[i % len(seed_list)]) for i in range(rollout_total)]
+
+
+def load_checkpoint(path: Path, map_location: str) -> Dict[str, Any]:
+    """
+    Load checkpoint dict across PyTorch versions.
+    PyTorch 2.6 defaults torch.load(..., weights_only=True), which breaks
+    checkpoints containing numpy objects (e.g., lambda vectors).
+    """
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        # Older PyTorch may not support the weights_only argument.
+        return torch.load(path, map_location=map_location)
+
+
+def save_metric_plot(
+    save_dir: Path,
+    values: list[float],
+    name: str,
+    ylabel: str,
+    epochs: list[int] | None = None,
+) -> None:
     import matplotlib.pyplot as plt
 
     if len(values) == 0:
         return
+    if epochs is not None and len(epochs) == len(values):
+        x = np.asarray(epochs, dtype=np.int32)
+    else:
+        x = np.arange(1, len(values) + 1)
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(np.arange(1, len(values) + 1), values, linewidth=1.6)
+    ax.plot(x, values, linewidth=1.6)
     ax.set_xlabel("epoch")
     ax.set_ylabel(ylabel)
     ax.set_title(f"Training {ylabel} per Epoch")
@@ -82,7 +143,199 @@ def save_metric_plot(save_dir: Path, values: list[float], name: str, ylabel: str
     plt.close(fig)
 
 
-def save_checkpoint(save_dir: Path, ep: int, agent: RPGPDPPOAgent, cfg: RPGPDPPOConfig, obs_dim: int, act_dim: int, num_costs: int) -> Path:
+def save_cost_plot(
+    save_dir: Path,
+    undiscounted_costs: list[float],
+    discounted_costs: list[float],
+    cost_limit: float,
+    name: str,
+    epochs: list[int] | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    if len(undiscounted_costs) == 0 and len(discounted_costs) == 0:
+        return
+
+    n = max(len(undiscounted_costs), len(discounted_costs))
+    if epochs is not None and len(epochs) >= n:
+        x = np.asarray(epochs[:n], dtype=np.int32)
+    else:
+        x = np.arange(1, n + 1)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    if len(undiscounted_costs) > 0:
+        ax.plot(
+            x[: len(undiscounted_costs)],
+            undiscounted_costs,
+            linewidth=1.6,
+            color="tab:blue",
+            label="Undiscounted Cost",
+        )
+    if len(discounted_costs) > 0:
+        ax.plot(
+            x[: len(discounted_costs)],
+            discounted_costs,
+            linewidth=1.6,
+            color="tab:red",
+            label="Discounted Cost",
+        )
+    ax.axhline(float(cost_limit), linestyle="--", linewidth=1.4, color="tab:red", alpha=0.85, label="Cost Limit")
+    ax.set_xlabel("epoch")
+    ax.set_ylabel("cost")
+    ax.set_title("Training Cost per Epoch")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    out = save_dir / f"{name}.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+
+
+def save_return_cost_plot(
+    save_dir: Path,
+    returns: list[float],
+    undiscounted_costs: list[float],
+    discounted_costs: list[float],
+    cost_limit: float,
+    name: str,
+    epochs: list[int] | None = None,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    n = max(len(returns), len(undiscounted_costs), len(discounted_costs))
+    if n == 0:
+        return
+    if epochs is not None and len(epochs) >= n:
+        x = np.asarray(epochs[:n], dtype=np.int32)
+    else:
+        x = np.arange(1, n + 1)
+
+    fig, (ax_ret, ax_cost) = plt.subplots(
+        2,
+        1,
+        figsize=(7.6, 5.8),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.0, 1.0], "hspace": 0.08},
+    )
+
+    if len(returns) > 0:
+        ax_ret.plot(
+            x[: len(returns)],
+            returns,
+            linewidth=1.8,
+            color="green",
+            label="Return",
+        )
+    if len(undiscounted_costs) > 0:
+        ax_cost.plot(
+            x[: len(undiscounted_costs)],
+            undiscounted_costs,
+            linewidth=1.5,
+            color="tab:blue",
+            label="Undiscounted Cost",
+        )
+    if len(discounted_costs) > 0:
+        ax_cost.plot(
+            x[: len(discounted_costs)],
+            discounted_costs,
+            linewidth=1.5,
+            color="tab:red",
+            label="Discounted Cost",
+        )
+    ax_cost.axhline(
+        float(cost_limit),
+        linestyle="--",
+        linewidth=1.3,
+        color="tab:red",
+        alpha=0.85,
+        label="Cost Limit",
+    )
+
+    ax_ret.set_ylabel("return", color="green")
+    ax_ret.tick_params(axis="y", labelcolor="green")
+    ax_ret.set_title("Training Return and Cost per Epoch")
+    ax_ret.grid(True, alpha=0.3)
+    ax_ret.legend(loc="best")
+
+    ax_cost.set_xlabel("epoch")
+    ax_cost.set_ylabel("cost")
+    ax_cost.grid(True, alpha=0.3)
+    ax_cost.legend(loc="best")
+
+    if len(x) > 0:
+        ax_cost.set_xlim(float(x[0]), float(x[-1]))
+
+    out = save_dir / f"{name}.png"
+    fig.tight_layout()
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+
+
+def _history_path(save_dir: Path) -> Path:
+    return save_dir / HISTORY_FILE
+
+
+def load_history(save_dir: Path, upto_epoch: int | None = None) -> Dict[str, list]:
+    out = {"epochs": [], "ret_hist": [], "c0_hist": [], "jc0_hist": []}
+    p = _history_path(save_dir)
+    if not p.exists():
+        return out
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        epochs = [int(x) for x in raw.get("epochs", [])]
+        ret_hist = [float(x) for x in raw.get("ret_hist", [])]
+        c0_hist = [float(x) for x in raw.get("c0_hist", [])]
+        jc0_hist = [float(x) for x in raw.get("jc0_hist", [])]
+        n = min(len(epochs), len(ret_hist), len(c0_hist), len(jc0_hist))
+        epochs, ret_hist, c0_hist, jc0_hist = epochs[:n], ret_hist[:n], c0_hist[:n], jc0_hist[:n]
+        if upto_epoch is not None:
+            keep_n = 0
+            for i, e in enumerate(epochs):
+                if int(e) <= int(upto_epoch):
+                    keep_n = i + 1
+                else:
+                    break
+            epochs, ret_hist, c0_hist, jc0_hist = (
+                epochs[:keep_n],
+                ret_hist[:keep_n],
+                c0_hist[:keep_n],
+                jc0_hist[:keep_n],
+            )
+        out = {
+            "epochs": epochs,
+            "ret_hist": ret_hist,
+            "c0_hist": c0_hist,
+            "jc0_hist": jc0_hist,
+        }
+    except Exception as e:
+        print(f"[History] Failed to load {p}: {e}")
+    return out
+
+
+def save_history(save_dir: Path, epochs: list[int], ret_hist: list[float], c0_hist: list[float], jc0_hist: list[float]) -> None:
+    n = min(len(epochs), len(ret_hist), len(c0_hist), len(jc0_hist))
+    payload = {
+        "epochs": [int(x) for x in epochs[:n]],
+        "ret_hist": [float(x) for x in ret_hist[:n]],
+        "c0_hist": [float(x) for x in c0_hist[:n]],
+        "jc0_hist": [float(x) for x in jc0_hist[:n]],
+    }
+    p = _history_path(save_dir)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def save_checkpoint(
+    save_dir: Path,
+    ep: int,
+    agent: RPGPDPPOAgent,
+    cfg: RPGPDPPOConfig,
+    obs_dim: int,
+    act_dim: int,
+    num_costs: int,
+    history: Dict[str, list] | None = None,
+) -> Path:
     ckpt = {
         "epoch": int(ep),
         "pi": agent.pi.state_dict(),
@@ -94,6 +347,8 @@ def save_checkpoint(save_dir: Path, ep: int, agent: RPGPDPPOAgent, cfg: RPGPDPPO
         "act_dim": int(act_dim),
         "num_costs": int(num_costs),
     }
+    if history is not None:
+        ckpt["history"] = history
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = save_dir / f"ckpt_{ts}_epoch_{ep:03d}.pt"
     torch.save(ckpt, out)
@@ -196,10 +451,21 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
 
-    save_dir = Path(args.save_dir)
+    base_save_dir = Path(args.save_dir)
+    if args.resume_checkpoint:
+        save_dir = Path(args.resume_checkpoint).resolve().parent
+    else:
+        run_tag = datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        save_dir = base_save_dir / run_tag
     save_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[Save] run_dir={save_dir}")
 
     random_seed_each_rollout = not args.fixed_rollout_seeds
+    fixed_rollout_seeds: list[int] | None = None
+    if args.fixed_rollout_seed_range is not None:
+        fixed_rollout_seeds = parse_seed_spec(args.fixed_rollout_seed_range)
+        # Explicit fixed seed list has highest priority.
+        random_seed_each_rollout = False
     seed_cfg = cfg.get("training", {}).get("seed", 0)
     seed = args.seed if args.seed is not None else seed_cfg
     if random_seed_each_rollout and args.seed is None:
@@ -277,14 +543,14 @@ def main():
     # resume/init
     start_epoch = 1
     if args.init_checkpoint:
-        ckpt = torch.load(Path(args.init_checkpoint).resolve(), map_location=args.device)
+        ckpt = load_checkpoint(Path(args.init_checkpoint).resolve(), map_location=args.device)
         agent.pi.load_state_dict(ckpt.get("pi", ckpt.get("pi_hat")))
         agent.v_r.load_state_dict(ckpt["v_r"])
         agent.v_c.load_state_dict(ckpt["v_c"])
         agent.lam = np.asarray(ckpt.get("lambda", ckpt.get("lambda_hat", agent.lam)), dtype=np.float32)
         print(f"[Init] Loaded weights from {args.init_checkpoint}")
     elif args.resume_checkpoint:
-        ckpt = torch.load(Path(args.resume_checkpoint).resolve(), map_location=args.device)
+        ckpt = load_checkpoint(Path(args.resume_checkpoint).resolve(), map_location=args.device)
         agent.pi.load_state_dict(ckpt.get("pi", ckpt.get("pi_hat")))
         agent.v_r.load_state_dict(ckpt["v_r"])
         agent.v_c.load_state_dict(ckpt["v_c"])
@@ -298,6 +564,17 @@ def main():
     )
     if random_seed_each_rollout:
         print("[Seed] random_seed_each_rollout enabled: each episode reset uses a fresh random seed.")
+    if fixed_rollout_seeds is not None:
+        rollout_total_cfg = int(algo_cfg.num_roll_out) if algo_cfg.num_roll_out is not None else 1
+        if len(fixed_rollout_seeds) < rollout_total_cfg:
+            print(
+                f"[Seed] fixed_rollout_seed_range has {len(fixed_rollout_seeds)} seed(s) and num_roll_out={rollout_total_cfg}; "
+                "seeds will repeat cyclically each epoch.",
+            )
+        print(
+            f"[Seed] fixed_rollout_seed_range enabled: using same {len(fixed_rollout_seeds)} rollout seeds every epoch "
+            f"(first={fixed_rollout_seeds[0]}, last={fixed_rollout_seeds[-1]}).",
+        )
     if args.live and algo_cfg.num_roll_out is not None and int(args.rollout_parallel) > 1:
         print("[Live] Live rendering is only supported in sequential rollout. Disabling rollout_parallel.")
         args.rollout_parallel = 1
@@ -305,10 +582,30 @@ def main():
         print("[Rollout] rollout_parallel>1 with a single episode per epoch has no benefit; using sequential collection.")
         args.rollout_parallel = 1
 
+    epoch_hist: list[int] = []
     ret_hist: list[float] = []
     c0_hist: list[float] = []
+    jc0_hist: list[float] = []
+    if args.resume_checkpoint:
+        resume_epoch = max(0, start_epoch - 1)
+        hist = load_history(save_dir, upto_epoch=resume_epoch)
+        epoch_hist = hist["epochs"]
+        ret_hist = hist["ret_hist"]
+        c0_hist = hist["c0_hist"]
+        jc0_hist = hist["jc0_hist"]
+        if len(epoch_hist) == 0 and isinstance(ckpt.get("history"), dict):
+            h = ckpt["history"]
+            epoch_hist = [int(x) for x in h.get("epochs", []) if int(x) <= resume_epoch]
+            ret_hist = [float(x) for x in h.get("ret_hist", [])][: len(epoch_hist)]
+            c0_hist = [float(x) for x in h.get("c0_hist", [])][: len(epoch_hist)]
+            jc0_hist = [float(x) for x in h.get("jc0_hist", [])][: len(epoch_hist)]
+        if len(epoch_hist) > 0:
+            print(f"[History] Restored {len(epoch_hist)} epochs for plotting (through epoch {epoch_hist[-1]}).")
+        else:
+            print("[History] No prior history file found; plots will start from resumed epoch.")
 
     for ep in range(start_epoch, epochs + 1):
+        epoch_t0 = time.perf_counter()
         trainer.buf.reset()
         if int(algo_cfg.num_roll_out) > 1 and int(args.rollout_parallel) > 1:
             rollout_device = args.device
@@ -323,7 +620,9 @@ def main():
             }
             algo_cfg_dict = asdict(algo_cfg)
             rollout_total = int(algo_cfg.num_roll_out)
-            if random_seed_each_rollout:
+            if fixed_rollout_seeds is not None:
+                seeds = expand_rollout_seeds(fixed_rollout_seeds, rollout_total)
+            elif random_seed_each_rollout:
                 seeds = [int(np.random.randint(0, 2**31 - 1)) for _ in range(rollout_total)]
             else:
                 seeds = [seed + 1000 * ep + i for i in range(rollout_total)]
@@ -378,34 +677,65 @@ def main():
                     collect[f"EpCost{i}Mean"] = float(np.mean(C[:, i]))
                     collect[f"EpCost{i}Std"] = float(np.std(C[:, i]))
         else:
+            seq_rollout_seeds: list[int] | None = None
+            rollout_total = int(algo_cfg.num_roll_out) if algo_cfg.num_roll_out is not None else 1
+            if fixed_rollout_seeds is not None:
+                seq_rollout_seeds = expand_rollout_seeds(fixed_rollout_seeds, rollout_total)
             collect = trainer.collect_epoch(
                 seed=seed + ep,
                 live=args.live,
                 random_seed_each_rollout=random_seed_each_rollout,
+                rollout_seeds=seq_rollout_seeds,
             )
         upd = trainer.train_epoch()
+        epoch_hist.append(int(ep))
         ret_hist.append(float(collect.get("EpRetMean", 0.0)))
         c0_hist.append(float(collect.get("EpCost0Mean", 0.0)))
         lam0 = float(agent.lam[0]) if len(agent.lam) > 0 else 0.0
         jc0_mean = float(upd.get("Jc_mean_0", upd.get("Jc_0", 0.0)))
+        jc0_hist.append(jc0_mean)
+        save_history(save_dir, epoch_hist, ret_hist, c0_hist, jc0_hist)
         jc0_std = float(upd.get("Jc_std_0", 0.0))
         jr_mean = float(upd.get("Jr_mean", 0.0))
         jr_std = float(upd.get("Jr_std", 0.0))
         viol0 = float(upd.get("viol_0", 0.0))
+        epoch_sec = time.perf_counter() - epoch_t0
 
         print(
             f"Epoch {ep:03d} | Ret {collect['EpRetMean']:.2f} (std {collect.get('EpRetStd', 0.0):.3f}) | "
             f"Jr {jr_mean:.3f} (std {jr_std:.3f}) | "
             f"C0 {collect.get('EpCost0Mean', 0.0):.2f} (std {collect.get('EpCost0Std', 0.0):.3f}) | "
             f"Jc0 {jc0_mean:.3f} (std {jc0_std:.3f}) | viol0 {viol0:.3f} | "
-            f"KL {upd.get('kl', 0.0):.4f} | λ0 {lam0:.3f}"
+            f"KL {upd.get('kl', 0.0):.4f} | λ0 {lam0:.3f} | time {epoch_sec:.2f}s"
         )
 
         if args.checkpoint_every > 0 and (ep % args.checkpoint_every == 0):
-            ckpt_path = save_checkpoint(save_dir, ep, agent, algo_cfg, wrapped.obs_dim(), wrapped.act_dim(), len(cmdp_cfg.cost_limits))
+            ckpt_path = save_checkpoint(
+                save_dir,
+                ep,
+                agent,
+                algo_cfg,
+                wrapped.obs_dim(),
+                wrapped.act_dim(),
+                len(cmdp_cfg.cost_limits),
+                history={
+                    "epochs": epoch_hist,
+                    "ret_hist": ret_hist,
+                    "c0_hist": c0_hist,
+                    "jc0_hist": jc0_hist,
+                },
+            )
             ckpt_tag = ckpt_path.stem
-            save_metric_plot(save_dir, ret_hist, f"returns_{ckpt_tag}", "EpRetMean")
-            save_metric_plot(save_dir, c0_hist, f"costs_{ckpt_tag}", "EpCost0Mean")
+            cost_limit0 = float(cmdp_cfg.cost_limits[0]) if len(cmdp_cfg.cost_limits) > 0 else 0.0
+            save_return_cost_plot(
+                save_dir=save_dir,
+                returns=ret_hist,
+                undiscounted_costs=c0_hist,
+                discounted_costs=jc0_hist,
+                cost_limit=cost_limit0,
+                name=f"returns_costs_{ckpt_tag}",
+                epochs=epoch_hist,
+            )
             print(f"  [Saved] {ckpt_path}")
 
 

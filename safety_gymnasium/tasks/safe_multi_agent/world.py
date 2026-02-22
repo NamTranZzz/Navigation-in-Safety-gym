@@ -182,7 +182,27 @@ class World:  # pylint: disable=too-many-instance-attributes
         with open(os.path.join(BASE_DIR, 'configs/assets.yaml'), encoding='utf-8') as file:
             assets_config = yaml.load(file, Loader=yaml.FullLoader)  # noqa: S506
 
-        texture.append(assets_config['textures']['skybox'])
+        # Optional robustness mode: avoid decoding file-based skybox PNGs in MuJoCo.
+        # This is useful on some systems where libpng intermittently fails in parallel workers.
+        disable_file_skybox = os.getenv('SAFETY_GYM_DISABLE_FILE_SKYBOX', '').lower() in {
+            '1',
+            'true',
+            'yes',
+            'on',
+        }
+        if disable_file_skybox:
+            texture.append(
+                {
+                    '@type': 'skybox',
+                    '@builtin': 'gradient',
+                    '@rgb1': '0.3 0.5 0.8',
+                    '@rgb2': '0.0 0.0 0.0',
+                    '@width': 512,
+                    '@height': 3072,
+                },
+            )
+        else:
+            texture.append(assets_config['textures']['skybox'])
 
         if self.floor_type == 'mat':  # pylint: disable=no-member
             texture.append(assets_config['textures']['matplane'])

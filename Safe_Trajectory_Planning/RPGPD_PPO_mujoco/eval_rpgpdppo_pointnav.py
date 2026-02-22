@@ -34,7 +34,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", type=str, default="config_pointnav_RPGPD.json", help="Path to JSON config")
     p.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint .pt")
     p.add_argument("--device", type=str, default="cpu", help="cpu or cuda or mps")
-    p.add_argument("--seed", type=int, default=0, help="Base seed for evaluation episodes")
+    p.add_argument("--seed", type=int, default=None, help="Base seed for evaluation episodes")
+    p.add_argument(
+        "--random_eval_seeds",
+        action="store_true",
+        help="Use random per-episode seeds (training-like behavior)",
+    )
+    p.add_argument(
+        "--fixed_eval_seed_range",
+        type=str,
+        default=None,
+        help='Use a fixed deterministic eval seed list, e.g. "1-120" or "1,2,3".',
+    )
     p.add_argument("--num_episodes", type=int, default=5, help="Number of evaluation episodes")
     p.add_argument("--max_steps", type=int, default=None, help="Override eval max steps")
     p.add_argument("--parallel", type=int, default=1, help="Number of parallel workers")
@@ -46,9 +57,34 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fps", type=int, default=30, help="FPS for saved GIF/MP4")
     p.add_argument("--camera_name", type=str, default=None, help="MuJoCo camera name (e.g., topdown)")
     p.add_argument("--camera_id", type=int, default=None, help="MuJoCo camera id (overrides name if set)")
+    p.add_argument("--camera_topdown", action="store_true", help="Auto-select a top-down MuJoCo camera")
     p.add_argument("--render_width", type=int, default=None, help="Render width for video frames")
     p.add_argument("--render_height", type=int, default=None, help="Render height for video frames")
+    p.add_argument("--mp4_macro_block_size", type=int, default=1, help="FFmpeg macro block size for MP4 (1 keeps exact size)")
+    p.add_argument("--mp4_crf", type=int, default=18, help="FFmpeg CRF for MP4 quality (lower is better, typical 17-23)")
+    p.add_argument("--mp4_preset", type=str, default="slow", help="FFmpeg preset for MP4 (slower usually gives better quality)")
     return p.parse_args()
+
+
+def parse_seed_spec(spec: str) -> list[int]:
+    s = str(spec).strip()
+    if not s:
+        raise ValueError("empty seed spec")
+    if "-" in s and "," not in s:
+        lo_s, hi_s = s.split("-", 1)
+        lo = int(lo_s.strip())
+        hi = int(hi_s.strip())
+        if hi < lo:
+            raise ValueError(f"invalid seed range: {spec}")
+        return [int(x) for x in range(lo, hi + 1)]
+    out: list[int] = []
+    for tok in s.split(","):
+        tok = tok.strip()
+        if tok:
+            out.append(int(tok))
+    if not out:
+        raise ValueError(f"invalid seed list: {spec}")
+    return out
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -170,21 +206,75 @@ def rollout_frames(
     max_steps: int,
     seed: int | None,
     fps: int,
+    gamma: float,
+    expected_width: int | None = None,
+    expected_height: int | None = None,
     render_kwargs: Dict[str, Any] | None = None,
 ) -> List[np.ndarray]:
     obs, _ = env.reset(seed=seed)
     frames: List[np.ndarray] = []
+    ep_ret = 0.0
+    disc_cost0 = 0.0
+    disc = 1.0
+
+    def _overlay_metrics(frame: np.ndarray, ret_val: float, dcost_val: float) -> np.ndarray:
+        from PIL import Image, ImageDraw, ImageFont
+
+        arr = np.asarray(frame)
+        if arr.dtype != np.uint8:
+            if np.issubdtype(arr.dtype, np.floating):
+                maxv = float(np.nanmax(arr)) if arr.size > 0 else 1.0
+                scale = 255.0 if maxv <= 1.0 else 1.0
+                arr = np.clip(arr * scale, 0, 255).astype(np.uint8)
+            else:
+                arr = np.clip(arr, 0, 255).astype(np.uint8)
+
+        img = Image.fromarray(arr).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        h, w = img.height, img.width
+        font_size = max(24, int(h * 0.04))
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", size=font_size)
+        except Exception:
+            font = ImageFont.load_default()
+        line1 = f"Reward (undisc): {ret_val:.2f}"
+        line2 = f"Cost0 (disc): {dcost_val:.2f}"
+        x = max(12, int(0.012 * w))
+        y = max(22, int(0.04 * h))
+        pad = max(8, int(font_size * 0.35))
+        line_gap = max(4, int(font_size * 0.2))
+        txt1_w, txt1_h = draw.textbbox((0, 0), line1, font=font)[2:]
+        txt2_w, txt2_h = draw.textbbox((0, 0), line2, font=font)[2:]
+        box_w = max(txt1_w, txt2_w) + 2 * pad
+        box_h = txt1_h + txt2_h + line_gap + 2 * pad
+        draw.rectangle((x, y, x + box_w, y + box_h), fill=(0, 0, 0))
+        draw.text((x + pad, y + pad), line1, fill=(255, 255, 255), font=font)
+        draw.text((x + pad, y + pad + txt1_h + line_gap), line2, fill=(255, 255, 255), font=font)
+        return np.asarray(img)
 
     frame = env.render(**(render_kwargs or {}))
     if frame is not None:
-        frames.append(np.asarray(frame))
+        arr = np.asarray(frame)
+        if expected_width is not None and expected_height is not None:
+            h, w = int(arr.shape[0]), int(arr.shape[1])
+            if w != int(expected_width) or h != int(expected_height):
+                print(
+                    f"[Video] Rendered frame is {w}x{h}, not requested {expected_width}x{expected_height}. "
+                    "This indicates renderer-side resolution limits."
+                )
+        frames.append(_overlay_metrics(arr, ep_ret, disc_cost0))
 
     for _ in range(max_steps):
         act, _, _, _ = agent.act(obs, deterministic=True)
-        obs, _, terminated, truncated, _ = env.step(act)
+        obs, r, terminated, truncated, info = env.step(act)
+        ep_ret += float(r)
+        costs = np.asarray(info.get("costs", [0.0]), dtype=np.float32)
+        c0 = float(costs[0]) if len(costs) > 0 else 0.0
+        disc_cost0 += disc * c0
+        disc *= gamma
         frame = env.render(**(render_kwargs or {}))
         if frame is not None:
-            frames.append(np.asarray(frame))
+            frames.append(_overlay_metrics(np.asarray(frame), ep_ret, disc_cost0))
         if terminated or truncated:
             break
 
@@ -204,13 +294,44 @@ def _resize_frames(frames: List[np.ndarray], width: int, height: int) -> List[np
     return resized
 
 
-def save_frames(frames: List[np.ndarray], save_path: Path, fps: int, width: int | None = None, height: int | None = None) -> None:
+def save_frames(
+    frames: List[np.ndarray],
+    save_path: Path,
+    fps: int,
+    width: int | None = None,
+    height: int | None = None,
+    mp4_macro_block_size: int = 1,
+    mp4_crf: int = 18,
+    mp4_preset: str = "slow",
+) -> None:
     import imageio.v2 as imageio
 
-    if width is not None and height is not None:
-        frames = _resize_frames(frames, width, height)
+    if width is not None and height is not None and frames:
+        src_h, src_w = int(frames[0].shape[0]), int(frames[0].shape[1])
+        if src_w != int(width) or src_h != int(height):
+            if save_path.suffix.lower() == ".mp4":
+                print(
+                    f"[Video] Keeping native frame size {src_w}x{src_h} for MP4 to avoid quality loss from upscaling "
+                    f"to {width}x{height}."
+                )
+            else:
+                frames = _resize_frames(frames, width, height)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    imageio.mimsave(str(save_path), frames, fps=fps)
+    if save_path.suffix.lower() == ".mp4":
+        # Keep exact render size (e.g., true 1920x1080) and use higher-quality H.264 settings.
+        with imageio.get_writer(
+            str(save_path),
+            fps=fps,
+            format="FFMPEG",
+            codec="libx264",
+            pixelformat="yuv420p",
+            macro_block_size=int(mp4_macro_block_size),
+            output_params=["-crf", str(int(mp4_crf)), "-preset", str(mp4_preset)],
+        ) as writer:
+            for f in frames:
+                writer.append_data(f)
+    else:
+        imageio.mimsave(str(save_path), frames, fps=fps)
 
 
 def _concat_frames(all_frames: List[List[np.ndarray]], pad_frames: int = 10) -> List[np.ndarray]:
@@ -220,6 +341,61 @@ def _concat_frames(all_frames: List[List[np.ndarray]], pad_frames: int = 10) -> 
         if frames and pad_frames > 0:
             merged.extend([frames[-1]] * pad_frames)
     return merged
+
+
+def _find_mj_model(obj: Any, max_depth: int = 6) -> Any | None:
+    queue: List[Any] = [obj]
+    seen = set()
+    depth = 0
+    while queue and depth <= max_depth:
+        nxt: List[Any] = []
+        for cur in queue:
+            if cur is None or id(cur) in seen:
+                continue
+            seen.add(id(cur))
+            model = getattr(cur, "model", None)
+            if model is not None and hasattr(model, "ncam"):
+                return model
+            sim = getattr(cur, "sim", None)
+            if sim is not None and getattr(sim, "model", None) is not None:
+                return sim.model
+            for attr in ("env", "_env", "unwrapped", "task", "_task", "world", "_world", "builder", "_builder"):
+                if hasattr(cur, attr):
+                    nxt.append(getattr(cur, attr))
+        queue = nxt
+        depth += 1
+    return None
+
+
+def _camera_name(model: Any, cam_id: int) -> str:
+    try:
+        adr = int(model.name_camadr[cam_id])
+        raw = model.names[adr:]
+        if isinstance(raw, memoryview):
+            raw = raw.tobytes()
+        name = bytes(raw).split(b"\x00", 1)[0].decode("utf-8", errors="ignore")
+        return str(name)
+    except Exception:
+        return ""
+
+
+def _pick_topdown_camera_id(env: RewardCostWrapper) -> int | None:
+    model = _find_mj_model(env)
+    if model is None:
+        return None
+    ncam = int(getattr(model, "ncam", 0))
+    if ncam <= 0:
+        return None
+
+    # Prefer cameras explicitly named as top-down; otherwise choose the highest camera by z-position.
+    preferred = []
+    for cam_id in range(ncam):
+        name = _camera_name(model, cam_id).lower()
+        if any(k in name for k in ("top", "down", "overhead", "bird", "global")):
+            preferred.append(cam_id)
+    if preferred:
+        return int(max(preferred, key=lambda i: float(model.cam_pos[i][2])))
+    return int(max(range(ncam), key=lambda i: float(model.cam_pos[i][2])))
 
 
 def eval_worker(args: Tuple[str, str, int, int, str]) -> Dict[str, Any]:
@@ -236,8 +412,10 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
 
-    save_dir = Path(args.save_dir) if args.save_dir else Path(args.checkpoint).resolve().parent
+    checkpoint_dir = Path(args.checkpoint).resolve().parent
+    save_dir = Path(args.save_dir) if args.save_dir else checkpoint_dir
     save_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     if args.parallel > 1 and args.device != "cpu":
         print("[Eval] Parallel eval uses CPU workers; switching device to cpu.")
@@ -248,7 +426,28 @@ def main():
     env_cfg = MujocoPointNavConfig(**cfg["env"])
     max_steps = int(args.max_steps) if args.max_steps is not None else int(env_cfg.max_steps)
 
-    seeds = [args.seed + i for i in range(int(args.num_episodes))]
+    base_seed = 0 if args.seed is None else int(args.seed)
+    if args.fixed_eval_seed_range is not None:
+        fixed_seeds = parse_seed_spec(args.fixed_eval_seed_range)
+        if len(fixed_seeds) < int(args.num_episodes):
+            raise ValueError(
+                f"fixed_eval_seed_range provides {len(fixed_seeds)} seeds, "
+                f"but num_episodes={int(args.num_episodes)}.",
+            )
+        seeds = [int(s) for s in fixed_seeds[: int(args.num_episodes)]]
+        print(
+            f"[Seed] fixed_eval_seed_range enabled: using {len(seeds)} fixed seeds "
+            f"(first={seeds[0]}, last={seeds[-1]}).",
+        )
+    elif args.random_eval_seeds:
+        if args.seed is None:
+            # Match training default behavior: random base seed when not provided.
+            base_seed = int(np.random.default_rng().integers(0, 2**31 - 1))
+        rng = np.random.default_rng(base_seed)
+        seeds = [int(rng.integers(0, 2**31 - 1)) for _ in range(int(args.num_episodes))]
+        print(f"[Seed] random_eval_seeds enabled: base_seed={base_seed}")
+    else:
+        seeds = [base_seed + i for i in range(int(args.num_episodes))]
 
     if args.parallel > 1:
         import multiprocessing as mp
@@ -286,6 +485,8 @@ def main():
 
     if args.save_gif or args.save_mp4 or args.save_mp4_all or args.save_mp4_each:
         env_kwargs: Dict[str, Any] = {}
+        # Keep legacy behavior for explicit camera selection so existing commands
+        # (e.g., --camera_id 1) preserve historical view framing.
         if args.camera_id is not None:
             env_kwargs["camera_id"] = int(args.camera_id)
         elif args.camera_name:
@@ -293,34 +494,109 @@ def main():
         render_kwargs: Dict[str, Any] = {}
         if args.render_width is not None:
             render_kwargs["width"] = int(args.render_width)
+            env_kwargs["width"] = int(args.render_width)
         if args.render_height is not None:
             render_kwargs["height"] = int(args.render_height)
+            env_kwargs["height"] = int(args.render_height)
         env, agent = build_env_and_agent(cfg, args.checkpoint, device, render_mode="rgb_array", env_kwargs=env_kwargs)
+        if args.camera_topdown:
+            topdown_id = _pick_topdown_camera_id(env)
+            if topdown_id is None:
+                print("[Video] Could not auto-select top-down camera; using default render camera.")
+            else:
+                render_kwargs["camera_id"] = int(topdown_id)
+                print(f"[Video] Using auto top-down camera_id={topdown_id}")
         ckpt_stem = Path(args.checkpoint).stem
         if args.save_gif or args.save_mp4:
-            frames = rollout_frames(env, agent, max_steps=max_steps, seed=args.seed, fps=args.fps, render_kwargs=render_kwargs)
+            frames = rollout_frames(
+                env,
+                agent,
+                max_steps=max_steps,
+                seed=seeds[0] if len(seeds) > 0 else base_seed,
+                fps=args.fps,
+                gamma=float(cfg["algo"]["gamma"]),
+                expected_width=args.render_width,
+                expected_height=args.render_height,
+                render_kwargs=render_kwargs,
+            )
             if args.save_gif:
-                out = save_dir / f"eval_rollout_{ckpt_stem}.gif"
-                save_frames(frames, out, fps=args.fps, width=args.render_width, height=args.render_height)
+                out = checkpoint_dir / f"eval_rollout_{ckpt_stem}.gif"
+                save_frames(
+                    frames,
+                    out,
+                    fps=args.fps,
+                    width=args.render_width,
+                    height=args.render_height,
+                    mp4_macro_block_size=args.mp4_macro_block_size,
+                    mp4_crf=args.mp4_crf,
+                    mp4_preset=args.mp4_preset,
+                )
                 print(f"  [Saved] {out}")
             if args.save_mp4:
-                out = save_dir / f"eval_rollout_{ckpt_stem}.mp4"
-                save_frames(frames, out, fps=args.fps, width=args.render_width, height=args.render_height)
+                out = checkpoint_dir / f"eval_rollout_{ckpt_stem}.mp4"
+                save_frames(
+                    frames,
+                    out,
+                    fps=args.fps,
+                    width=args.render_width,
+                    height=args.render_height,
+                    mp4_macro_block_size=args.mp4_macro_block_size,
+                    mp4_crf=args.mp4_crf,
+                    mp4_preset=args.mp4_preset,
+                )
                 print(f"  [Saved] {out}")
         if args.save_mp4_all:
             all_frames = []
             for s in seeds:
-                frames = rollout_frames(env, agent, max_steps=max_steps, seed=s, fps=args.fps, render_kwargs=render_kwargs)
+                frames = rollout_frames(
+                    env,
+                    agent,
+                    max_steps=max_steps,
+                    seed=s,
+                    fps=args.fps,
+                    gamma=float(cfg["algo"]["gamma"]),
+                    expected_width=args.render_width,
+                    expected_height=args.render_height,
+                    render_kwargs=render_kwargs,
+                )
                 all_frames.append(frames)
             merged = _concat_frames(all_frames, pad_frames=10)
-            out = save_dir / f"eval_rollout_all_{ckpt_stem}.mp4"
-            save_frames(merged, out, fps=args.fps, width=args.render_width, height=args.render_height)
+            out = checkpoint_dir / f"eval_rollout_all_{ckpt_stem}.mp4"
+            save_frames(
+                merged,
+                out,
+                fps=args.fps,
+                width=args.render_width,
+                height=args.render_height,
+                mp4_macro_block_size=args.mp4_macro_block_size,
+                mp4_crf=args.mp4_crf,
+                mp4_preset=args.mp4_preset,
+            )
             print(f"  [Saved] {out}")
         if args.save_mp4_each:
             for s in seeds:
-                frames = rollout_frames(env, agent, max_steps=max_steps, seed=s, fps=args.fps, render_kwargs=render_kwargs)
-                out = save_dir / f"eval_rollout_{ckpt_stem}_seed_{s}.mp4"
-                save_frames(frames, out, fps=args.fps, width=args.render_width, height=args.render_height)
+                frames = rollout_frames(
+                    env,
+                    agent,
+                    max_steps=max_steps,
+                    seed=s,
+                    fps=args.fps,
+                    gamma=float(cfg["algo"]["gamma"]),
+                    expected_width=args.render_width,
+                    expected_height=args.render_height,
+                    render_kwargs=render_kwargs,
+                )
+                out = checkpoint_dir / f"eval_rollout_{ckpt_stem}_seed_{s}.mp4"
+                save_frames(
+                    frames,
+                    out,
+                    fps=args.fps,
+                    width=args.render_width,
+                    height=args.render_height,
+                    mp4_macro_block_size=args.mp4_macro_block_size,
+                    mp4_crf=args.mp4_crf,
+                    mp4_preset=args.mp4_preset,
+                )
                 print(f"  [Saved] {out}")
 
 

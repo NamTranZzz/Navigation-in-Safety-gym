@@ -1,6 +1,6 @@
 {
   "env": {
-    "env_id": "SafetyPointDynObs1-v0",
+    "env_id": "SafetyPointDynObs2-v0",
     "max_steps": 1000,
     "action_scale": 1.0,
     "env_config_overrides": {
@@ -9,18 +9,18 @@
   },
   "cmdp": {
     "cost_limits": [
-      10
+      0.4
     ],
     "reward_scale": 1.0,
     "cost_scales": [
-      1.0
+      1
     ]
   },
   "algo": {
     "gamma": 0.999,
     "lam": 0.97,
-    "clip_ratio": 0.05,
-    "target_kl": 0.01,
+    "clip_ratio": 0.02,
+    "target_kl": 0.001,
     "pi_lr": 0.005,
     "vf_lr": 0.005,
     "train_pi_iters": 20,
@@ -35,7 +35,7 @@
     ],
     "entropy_coef": 0.1,
     "normalize_advantages": true,
-    "dual_lr": 0.01,
+    "dual_lr": 0.09,
     "dual_tau": 0.1,
     "lambda_init": 0.0,
     "lambda_max": 30.0,

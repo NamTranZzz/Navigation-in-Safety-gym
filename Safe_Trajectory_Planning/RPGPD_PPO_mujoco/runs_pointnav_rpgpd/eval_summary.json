@@ -1,53 +1,57 @@
 {
-  "checkpoint": "/Users/trannam/Downloads/Code/safety-gymnasium/Safe_Trajectory_Planning/RPGPD_PPO_mujoco/runs_pointnav_rpgpd/ckpt_20260208_232021_epoch_250.pt",
+  "checkpoint": "/Users/trannam/Downloads/Code/safety-gymnasium/Safe_Trajectory_Planning/RPGPD_PPO_mujoco/runs_pointnav_rpgpd/ckpt_20260221_113542_epoch_052.pt",
   "num_episodes": 5,
+  "num_attempts": 12,
+  "num_rejected": 7,
+  "acceptance_rate": 0.4166666666666667,
+  "cost_limit0": 3.0,
   "seeds": [
-    0,
-    1,
-    2,
-    3,
-    4
+    296473262,
+    1381852624,
+    1914698826,
+    1341660190,
+    1677970363
   ],
-  "return_mean": 6.6078619956970215,
-  "return_std": 0.37309595942497253,
-  "cost_mean": 0.800000011920929,
-  "len_mean": 113.5999984741211,
+  "return_mean": 8.756162643432617,
+  "return_std": 0.5910031199455261,
+  "cost_mean": 0.4000000059604645,
+  "len_mean": 177.8000030517578,
   "terminated_rate": 1.0,
   "episodes": [
     {
-      "EpRet": 6.454040326438401,
-      "EpCost0": 0.0,
-      "EpLen": 58,
+      "EpRet": 7.645406386878752,
+      "EpCost0": 1.0,
+      "EpLen": 156,
       "Terminated": true,
-      "seed": 0
+      "seed": 296473262
     },
     {
-      "EpRet": 7.179185775635541,
+      "EpRet": 8.646182203444805,
       "EpCost0": 0.0,
-      "EpLen": 202,
+      "EpLen": 156,
       "Terminated": true,
-      "seed": 1
+      "seed": 1381852624
     },
     {
-      "EpRet": 6.903296287653487,
+      "EpRet": 9.189913935805004,
       "EpCost0": 0.0,
-      "EpLen": 88,
+      "EpLen": 184,
       "Terminated": true,
-      "seed": 2
+      "seed": 1914698826
     },
     {
-      "EpRet": 6.203905370539789,
-      "EpCost0": 4.0,
-      "EpLen": 169,
+      "EpRet": 9.186636087321308,
+      "EpCost0": 1.0,
+      "EpLen": 193,
       "Terminated": true,
-      "seed": 3
+      "seed": 1341660190
     },
     {
-      "EpRet": 6.298881958073987,
+      "EpRet": 9.112674804267657,
       "EpCost0": 0.0,
-      "EpLen": 51,
+      "EpLen": 200,
       "Terminated": true,
-      "seed": 4
+      "seed": 1677970363
     }
   ]
 }
