@@ -1,0 +1,27 @@
+name: env_mujoco
+channels:
+  - defaults
+dependencies:
+  - python=3.10.19
+  - pip
+  - pip:
+      - gymnasium==0.28.1
+      - gymnasium-robotics==1.2.2
+      - numpy==1.23.5
+      - torch==2.10.0
+      - matplotlib==3.10.8
+      - pillow==12.1.0
+      - imageio==2.37.2
+      - imageio-ffmpeg==0.6.0
+      - absl-py==2.3.1
+      - cloudpickle==3.1.2
+      - farama-notifications==0.0.4
+      - glfw==2.10.0
+      - jax-jumpy==1.0.0
+      - pettingzoo==1.24.3
+      - pyopengl==3.1.10
+      - pygame==2.1.0
+      - mujoco==2.3.3
+      - pyyaml==6.0.3
+      - xmltodict==1.0.2
+      - -e ../..
