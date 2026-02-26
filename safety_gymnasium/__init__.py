@@ -130,6 +130,7 @@ dyn_obs_tasks = {
     'DynObs0': {},
     'DynObs1': {},
     'DynObs2': {},
+    'DynObs3': {},
 }
 __combine(dyn_obs_tasks, robots, max_episode_steps=1000)
 

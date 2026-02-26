@@ -1,15 +1,16 @@
 {
   "env": {
-    "env_id": "SafetyPointDynObs2-v0",
+    "env_id": "SafetyPointDynObs3-v0",
     "max_steps": 1000,
     "action_scale": 1.0,
     "env_config_overrides": {
-      "reward_conf.goal_time_coef": 0.005
-    }
+  "reward_conf.goal_time_coef": 0.005,
+  "lidar_conf.num_bins": 64
+}
   },
   "cmdp": {
     "cost_limits": [
-      0.4
+      5
     ],
     "reward_scale": 1.0,
     "cost_scales": [
@@ -21,8 +22,8 @@
     "lam": 0.97,
     "clip_ratio": 0.02,
     "target_kl": 0.001,
-    "pi_lr": 0.005,
-    "vf_lr": 0.005,
+    "pi_lr": 0.01,
+    "vf_lr": 0.01,
     "train_pi_iters": 20,
     "train_v_iters": 20,
     "max_grad_norm": 0.5,
@@ -35,9 +36,9 @@
     ],
     "entropy_coef": 0.1,
     "normalize_advantages": true,
-    "dual_lr": 0.09,
+    "dual_lr": 0.01,
     "dual_tau": 0.1,
-    "lambda_init": 0.0,
+    "lambda_init": 0,
     "lambda_max": 30.0,
     "dual_scale_one_minus_gamma": false
   },

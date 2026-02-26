@@ -103,6 +103,15 @@ def expand_rollout_seeds(seed_list: list[int], rollout_total: int) -> list[int]:
     return [int(seed_list[i % len(seed_list)]) for i in range(rollout_total)]
 
 
+def _next_obs_for_value(next_obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
+    # VecEnv-style APIs may return reset obs on done; use terminal_observation for V(s_{t+1}) when available.
+    candidate = info.get("terminal_observation", next_obs)
+    try:
+        return np.asarray(candidate, dtype=np.float32).reshape(-1)
+    except Exception:
+        return np.asarray(next_obs, dtype=np.float32).reshape(-1)
+
+
 def load_checkpoint(path: Path, map_location: str) -> Dict[str, Any]:
     """
     Load checkpoint dict across PyTorch versions.
@@ -194,15 +203,20 @@ def save_cost_plot(
 def save_return_cost_plot(
     save_dir: Path,
     returns: list[float],
+    returns_std: list[float],
     undiscounted_costs: list[float],
+    undiscounted_costs_std: list[float],
     discounted_costs: list[float],
+    discounted_costs_std: list[float],
+    dual_values: list[float],
     cost_limit: float,
     name: str,
     epochs: list[int] | None = None,
 ) -> None:
+    import matplotlib.colors as mcolors
     import matplotlib.pyplot as plt
 
-    n = max(len(returns), len(undiscounted_costs), len(discounted_costs))
+    n = max(len(returns), len(undiscounted_costs), len(discounted_costs), len(dual_values))
     if n == 0:
         return
     if epochs is not None and len(epochs) >= n:
@@ -210,37 +224,89 @@ def save_return_cost_plot(
     else:
         x = np.arange(1, n + 1)
 
-    fig, (ax_ret, ax_cost) = plt.subplots(
-        2,
+    fig, (ax_ret, ax_cost, ax_dual) = plt.subplots(
+        3,
         1,
-        figsize=(7.6, 5.8),
+        figsize=(10, 12),
         sharex=True,
-        gridspec_kw={"height_ratios": [1.0, 1.0], "hspace": 0.08},
+        gridspec_kw={"height_ratios": [1.0, 1.0, 1.0], "hspace": 0.08},
     )
 
+    def plot_mean_std_gradient(
+        ax: Any,
+        x_vals: np.ndarray,
+        means: list[float],
+        stds: list[float],
+        color: str,
+        mean_label: str,
+        std_label: str,
+        linewidth: float = 1.8,
+    ) -> None:
+        if len(means) == 0:
+            return
+        n_local = min(len(means), len(x_vals))
+        if n_local == 0:
+            return
+        mean_arr = np.asarray(means[:n_local], dtype=np.float32)
+        ax.plot(x_vals[:n_local], mean_arr, linewidth=linewidth, color=color, label=mean_label)
+        if len(stds) == 0:
+            return
+        std_arr = np.asarray(stds[:n_local], dtype=np.float32)
+        if std_arr.shape[0] < n_local:
+            std_arr = np.pad(std_arr, (0, n_local - std_arr.shape[0]), mode="constant", constant_values=0.0)
+        std_arr = np.abs(std_arr)
+        max_std = float(np.max(std_arr)) if std_arr.size > 0 else 0.0
+        if max_std <= 1e-12:
+            return
+        lower = mean_arr - std_arr
+        upper = mean_arr + std_arr
+        rgba = mcolors.to_rgba(color)
+        for i in range(n_local - 1):
+            std_mid = float(0.5 * (std_arr[i] + std_arr[i + 1]))
+            alpha = 0.05 + 0.30 * min(1.0, std_mid / max_std)
+            label = std_label if i == 0 else None
+            ax.fill_between(
+                x_vals[i : i + 2],
+                lower[i : i + 2],
+                upper[i : i + 2],
+                color=rgba,
+                alpha=alpha,
+                linewidth=0.0,
+                label=label,
+            )
+
     if len(returns) > 0:
-        ax_ret.plot(
-            x[: len(returns)],
-            returns,
-            linewidth=1.8,
+        plot_mean_std_gradient(
+            ax=ax_ret,
+            x_vals=x,
+            means=returns,
+            stds=returns_std,
             color="green",
-            label="Return",
+            mean_label="Return Mean",
+            std_label="Return ±1 std",
+            linewidth=1.8,
         )
     if len(undiscounted_costs) > 0:
-        ax_cost.plot(
-            x[: len(undiscounted_costs)],
-            undiscounted_costs,
-            linewidth=1.5,
+        plot_mean_std_gradient(
+            ax=ax_cost,
+            x_vals=x,
+            means=undiscounted_costs,
+            stds=undiscounted_costs_std,
             color="tab:blue",
-            label="Undiscounted Cost",
+            mean_label="Undiscounted Cost Mean",
+            std_label="Undiscounted Cost ±1 std",
+            linewidth=1.5,
         )
     if len(discounted_costs) > 0:
-        ax_cost.plot(
-            x[: len(discounted_costs)],
-            discounted_costs,
-            linewidth=1.5,
+        plot_mean_std_gradient(
+            ax=ax_cost,
+            x_vals=x,
+            means=discounted_costs,
+            stds=discounted_costs_std,
             color="tab:red",
-            label="Discounted Cost",
+            mean_label="Discounted Cost Mean",
+            std_label="Discounted Cost ±1 std",
+            linewidth=1.5,
         )
     ax_cost.axhline(
         float(cost_limit),
@@ -262,8 +328,21 @@ def save_return_cost_plot(
     ax_cost.grid(True, alpha=0.3)
     ax_cost.legend(loc="best")
 
+    if len(dual_values) > 0:
+        ax_dual.plot(
+            x[: len(dual_values)],
+            dual_values,
+            linewidth=1.5,
+            color="tab:purple",
+            label="Dual Variable (lambda)",
+        )
+    ax_dual.set_xlabel("epoch")
+    ax_dual.set_ylabel("lambda")
+    ax_dual.grid(True, alpha=0.3)
+    ax_dual.legend(loc="best")
+
     if len(x) > 0:
-        ax_cost.set_xlim(float(x[0]), float(x[-1]))
+        ax_dual.set_xlim(float(x[0]), float(x[-1]))
 
     out = save_dir / f"{name}.png"
     fig.tight_layout()
@@ -276,7 +355,16 @@ def _history_path(save_dir: Path) -> Path:
 
 
 def load_history(save_dir: Path, upto_epoch: int | None = None) -> Dict[str, list]:
-    out = {"epochs": [], "ret_hist": [], "c0_hist": [], "jc0_hist": []}
+    out = {
+        "epochs": [],
+        "ret_hist": [],
+        "ret_std_hist": [],
+        "c0_hist": [],
+        "c0_std_hist": [],
+        "jc0_hist": [],
+        "jc0_std_hist": [],
+        "lam0_hist": [],
+    }
     p = _history_path(save_dir)
     if not p.exists():
         return out
@@ -288,6 +376,26 @@ def load_history(save_dir: Path, upto_epoch: int | None = None) -> Dict[str, lis
         jc0_hist = [float(x) for x in raw.get("jc0_hist", [])]
         n = min(len(epochs), len(ret_hist), len(c0_hist), len(jc0_hist))
         epochs, ret_hist, c0_hist, jc0_hist = epochs[:n], ret_hist[:n], c0_hist[:n], jc0_hist[:n]
+        ret_std_hist = [float(x) for x in raw.get("ret_std_hist", [])]
+        if len(ret_std_hist) >= n:
+            ret_std_hist = ret_std_hist[:n]
+        else:
+            ret_std_hist = ret_std_hist + [0.0] * (n - len(ret_std_hist))
+        c0_std_hist = [float(x) for x in raw.get("c0_std_hist", [])]
+        if len(c0_std_hist) >= n:
+            c0_std_hist = c0_std_hist[:n]
+        else:
+            c0_std_hist = c0_std_hist + [0.0] * (n - len(c0_std_hist))
+        jc0_std_hist = [float(x) for x in raw.get("jc0_std_hist", [])]
+        if len(jc0_std_hist) >= n:
+            jc0_std_hist = jc0_std_hist[:n]
+        else:
+            jc0_std_hist = jc0_std_hist + [0.0] * (n - len(jc0_std_hist))
+        lam0_hist = [float(x) for x in raw.get("lam0_hist", [])]
+        if len(lam0_hist) >= n:
+            lam0_hist = lam0_hist[:n]
+        else:
+            lam0_hist = lam0_hist + [0.0] * (n - len(lam0_hist))
         if upto_epoch is not None:
             keep_n = 0
             for i, e in enumerate(epochs):
@@ -295,30 +403,61 @@ def load_history(save_dir: Path, upto_epoch: int | None = None) -> Dict[str, lis
                     keep_n = i + 1
                 else:
                     break
-            epochs, ret_hist, c0_hist, jc0_hist = (
+            epochs, ret_hist, ret_std_hist, c0_hist, c0_std_hist, jc0_hist, jc0_std_hist, lam0_hist = (
                 epochs[:keep_n],
                 ret_hist[:keep_n],
+                ret_std_hist[:keep_n],
                 c0_hist[:keep_n],
+                c0_std_hist[:keep_n],
                 jc0_hist[:keep_n],
+                jc0_std_hist[:keep_n],
+                lam0_hist[:keep_n],
             )
         out = {
             "epochs": epochs,
             "ret_hist": ret_hist,
+            "ret_std_hist": ret_std_hist,
             "c0_hist": c0_hist,
+            "c0_std_hist": c0_std_hist,
             "jc0_hist": jc0_hist,
+            "jc0_std_hist": jc0_std_hist,
+            "lam0_hist": lam0_hist,
         }
     except Exception as e:
         print(f"[History] Failed to load {p}: {e}")
     return out
 
 
-def save_history(save_dir: Path, epochs: list[int], ret_hist: list[float], c0_hist: list[float], jc0_hist: list[float]) -> None:
-    n = min(len(epochs), len(ret_hist), len(c0_hist), len(jc0_hist))
+def save_history(
+    save_dir: Path,
+    epochs: list[int],
+    ret_hist: list[float],
+    ret_std_hist: list[float],
+    c0_hist: list[float],
+    c0_std_hist: list[float],
+    jc0_hist: list[float],
+    jc0_std_hist: list[float],
+    lam0_hist: list[float],
+) -> None:
+    n = min(
+        len(epochs),
+        len(ret_hist),
+        len(ret_std_hist),
+        len(c0_hist),
+        len(c0_std_hist),
+        len(jc0_hist),
+        len(jc0_std_hist),
+        len(lam0_hist),
+    )
     payload = {
         "epochs": [int(x) for x in epochs[:n]],
         "ret_hist": [float(x) for x in ret_hist[:n]],
+        "ret_std_hist": [float(x) for x in ret_std_hist[:n]],
         "c0_hist": [float(x) for x in c0_hist[:n]],
+        "c0_std_hist": [float(x) for x in c0_std_hist[:n]],
         "jc0_hist": [float(x) for x in jc0_hist[:n]],
+        "jc0_std_hist": [float(x) for x in jc0_std_hist[:n]],
+        "lam0_hist": [float(x) for x in lam0_hist[:n]],
     }
     p = _history_path(save_dir)
     tmp = p.with_suffix(".json.tmp")
@@ -392,6 +531,8 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
     ep_ret = 0.0
     ep_cost = np.zeros((len(info["cost_limits"]),), dtype=np.float32)
     ep_len = 0
+    last_val_r = 0.0
+    last_val_c = np.zeros((len(info["cost_limits"]),), dtype=np.float32)
 
     traj = {
         "obs": [],
@@ -402,13 +543,22 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
         "val_r": [],
         "val_c": [],
         "done": [],
+        "terminated": [],
+        "truncated": [],
     }
 
     for t in range(max_steps):
         act, logp, v_r, v_c = agent.act(obs, deterministic=False)
         next_obs, rew, terminated, truncated, info = wrapped.step(act)
         costs = np.asarray(info["costs"], dtype=np.float32)
-        done = bool(terminated or truncated or (t + 1 >= max_steps))
+        # Keep termination cause explicit:
+        # - terminated: true MDP terminal (goal/failure), no bootstrap
+        # - truncated: time-limit/cap only, bootstrap
+        time_limit_reached = bool(truncated or (t + 1 >= max_steps))
+        terminated_step = bool(terminated)
+        truncated_step = bool(time_limit_reached and (not terminated_step))
+        # done is only for loop control/logging.
+        done = bool(terminated or time_limit_reached)
 
         traj["obs"].append(obs)
         traj["act"].append(act)
@@ -418,6 +568,8 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
         traj["val_r"].append(float(v_r))
         traj["val_c"].append(v_c)
         traj["done"].append(done)
+        traj["terminated"].append(terminated_step)
+        traj["truncated"].append(truncated_step)
 
         ep_ret += float(rew)
         ep_cost += costs
@@ -425,6 +577,15 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
         obs = next_obs
 
         if done:
+            # Bootstrap mask rule:
+            # - true terminal -> mask=0 -> last value is 0
+            # - truncation/time-limit -> mask=1 -> bootstrap from V(next_obs_for_value)
+            if bool(terminated):
+                last_val_r = 0.0
+                last_val_c = np.zeros_like(ep_cost, dtype=np.float32)
+            else:
+                obs_for_value = _next_obs_for_value(next_obs, info)
+                last_val_r, last_val_c = agent.value(obs_for_value)
             break
 
     traj_np = {
@@ -436,6 +597,8 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
         "val_r": np.asarray(traj["val_r"], dtype=np.float32),
         "val_c": np.asarray(traj["val_c"], dtype=np.float32),
         "done": np.asarray(traj["done"], dtype=np.float32),
+        "terminated": np.asarray(traj["terminated"], dtype=np.float32),
+        "truncated": np.asarray(traj["truncated"], dtype=np.float32),
     }
 
     return {
@@ -443,6 +606,8 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
         "ep_ret": float(ep_ret),
         "ep_cost": ep_cost.astype(np.float32),
         "ep_len": int(ep_len),
+        "last_val_r": float(last_val_r),
+        "last_val_c": np.asarray(last_val_c, dtype=np.float32),
         "seed": int(args["seed"]),
     }
 
@@ -584,21 +749,45 @@ def main():
 
     epoch_hist: list[int] = []
     ret_hist: list[float] = []
+    ret_std_hist: list[float] = []
     c0_hist: list[float] = []
+    c0_std_hist: list[float] = []
     jc0_hist: list[float] = []
+    jc0_std_hist: list[float] = []
+    lam0_hist: list[float] = []
     if args.resume_checkpoint:
         resume_epoch = max(0, start_epoch - 1)
         hist = load_history(save_dir, upto_epoch=resume_epoch)
         epoch_hist = hist["epochs"]
         ret_hist = hist["ret_hist"]
+        ret_std_hist = hist["ret_std_hist"]
         c0_hist = hist["c0_hist"]
+        c0_std_hist = hist["c0_std_hist"]
         jc0_hist = hist["jc0_hist"]
+        jc0_std_hist = hist["jc0_std_hist"]
+        lam0_hist = hist["lam0_hist"]
         if len(epoch_hist) == 0 and isinstance(ckpt.get("history"), dict):
             h = ckpt["history"]
             epoch_hist = [int(x) for x in h.get("epochs", []) if int(x) <= resume_epoch]
             ret_hist = [float(x) for x in h.get("ret_hist", [])][: len(epoch_hist)]
+            raw_ret_std_hist = [float(x) for x in h.get("ret_std_hist", [])]
+            ret_std_hist = raw_ret_std_hist[: len(epoch_hist)]
+            if len(ret_std_hist) < len(epoch_hist):
+                ret_std_hist += [0.0] * (len(epoch_hist) - len(ret_std_hist))
             c0_hist = [float(x) for x in h.get("c0_hist", [])][: len(epoch_hist)]
+            raw_c0_std_hist = [float(x) for x in h.get("c0_std_hist", [])]
+            c0_std_hist = raw_c0_std_hist[: len(epoch_hist)]
+            if len(c0_std_hist) < len(epoch_hist):
+                c0_std_hist += [0.0] * (len(epoch_hist) - len(c0_std_hist))
             jc0_hist = [float(x) for x in h.get("jc0_hist", [])][: len(epoch_hist)]
+            raw_jc0_std_hist = [float(x) for x in h.get("jc0_std_hist", [])]
+            jc0_std_hist = raw_jc0_std_hist[: len(epoch_hist)]
+            if len(jc0_std_hist) < len(epoch_hist):
+                jc0_std_hist += [0.0] * (len(epoch_hist) - len(jc0_std_hist))
+            raw_lam0_hist = [float(x) for x in h.get("lam0_hist", [])]
+            lam0_hist = raw_lam0_hist[: len(epoch_hist)]
+            if len(lam0_hist) < len(epoch_hist):
+                lam0_hist += [0.0] * (len(epoch_hist) - len(lam0_hist))
         if len(epoch_hist) > 0:
             print(f"[History] Restored {len(epoch_hist)} epochs for plotting (through epoch {epoch_hist[-1]}).")
         else:
@@ -657,10 +846,12 @@ def main():
                         traj["costs"][i],
                         traj["val_r"][i],
                         traj["val_c"][i],
-                        bool(traj["done"][i]),
+                        done=bool(traj["done"][i]),
+                        terminated=bool(traj["terminated"][i]),
+                        truncated=bool(traj["truncated"][i]),
                     )
-                last_val_r = 0.0
-                last_val_c = np.zeros_like(summ["ep_cost"], dtype=np.float32)
+                last_val_r = float(summ["last_val_r"])
+                last_val_c = np.asarray(summ["last_val_c"], dtype=np.float32)
                 trainer.buf.finish_path(last_val_r=last_val_r, last_val_c=last_val_c)
                 ep_rets.append(summ["ep_ret"])
                 ep_costs_epoch.append(summ["ep_cost"])
@@ -690,12 +881,26 @@ def main():
         upd = trainer.train_epoch()
         epoch_hist.append(int(ep))
         ret_hist.append(float(collect.get("EpRetMean", 0.0)))
+        ret_std_hist.append(float(collect.get("EpRetStd", 0.0)))
         c0_hist.append(float(collect.get("EpCost0Mean", 0.0)))
+        c0_std_hist.append(float(collect.get("EpCost0Std", 0.0)))
         lam0 = float(agent.lam[0]) if len(agent.lam) > 0 else 0.0
+        lam0_hist.append(lam0)
         jc0_mean = float(upd.get("Jc_mean_0", upd.get("Jc_0", 0.0)))
-        jc0_hist.append(jc0_mean)
-        save_history(save_dir, epoch_hist, ret_hist, c0_hist, jc0_hist)
         jc0_std = float(upd.get("Jc_std_0", 0.0))
+        jc0_hist.append(jc0_mean)
+        jc0_std_hist.append(jc0_std)
+        save_history(
+            save_dir,
+            epoch_hist,
+            ret_hist,
+            ret_std_hist,
+            c0_hist,
+            c0_std_hist,
+            jc0_hist,
+            jc0_std_hist,
+            lam0_hist,
+        )
         jr_mean = float(upd.get("Jr_mean", 0.0))
         jr_std = float(upd.get("Jr_std", 0.0))
         viol0 = float(upd.get("viol_0", 0.0))
@@ -721,22 +926,30 @@ def main():
                 history={
                     "epochs": epoch_hist,
                     "ret_hist": ret_hist,
+                    "ret_std_hist": ret_std_hist,
                     "c0_hist": c0_hist,
+                    "c0_std_hist": c0_std_hist,
                     "jc0_hist": jc0_hist,
+                    "jc0_std_hist": jc0_std_hist,
+                    "lam0_hist": lam0_hist,
                 },
             )
-            ckpt_tag = ckpt_path.stem
-            cost_limit0 = float(cmdp_cfg.cost_limits[0]) if len(cmdp_cfg.cost_limits) > 0 else 0.0
-            save_return_cost_plot(
-                save_dir=save_dir,
-                returns=ret_hist,
-                undiscounted_costs=c0_hist,
-                discounted_costs=jc0_hist,
-                cost_limit=cost_limit0,
-                name=f"returns_costs_{ckpt_tag}",
-                epochs=epoch_hist,
-            )
             print(f"  [Saved] {ckpt_path}")
+
+        cost_limit0 = float(cmdp_cfg.cost_limits[0]) if len(cmdp_cfg.cost_limits) > 0 else 0.0
+        save_return_cost_plot(
+            save_dir=save_dir,
+            returns=ret_hist,
+            returns_std=ret_std_hist,
+            undiscounted_costs=c0_hist,
+            undiscounted_costs_std=c0_std_hist,
+            discounted_costs=jc0_hist,
+            discounted_costs_std=jc0_std_hist,
+            dual_values=lam0_hist,
+            cost_limit=cost_limit0,
+            name="returns_costs_dual_latest",
+            epochs=epoch_hist,
+        )
 
 
 if __name__ == "__main__":

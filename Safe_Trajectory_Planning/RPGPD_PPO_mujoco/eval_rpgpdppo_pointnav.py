@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--camera_topdown", action="store_true", help="Auto-select a top-down MuJoCo camera")
     p.add_argument("--render_width", type=int, default=None, help="Render width for video frames")
     p.add_argument("--render_height", type=int, default=None, help="Render height for video frames")
+    p.add_argument(
+        "--overlay_unsafe_areas",
+        action="store_true",
+        help="Overlay unsafe-area circles on video frames (best with top-down camera).",
+    )
     p.add_argument("--mp4_macro_block_size", type=int, default=1, help="FFmpeg macro block size for MP4 (1 keeps exact size)")
     p.add_argument("--mp4_crf", type=int, default=18, help="FFmpeg CRF for MP4 quality (lower is better, typical 17-23)")
     p.add_argument("--mp4_preset", type=str, default="slow", help="FFmpeg preset for MP4 (slower usually gives better quality)")
@@ -210,12 +215,37 @@ def rollout_frames(
     expected_width: int | None = None,
     expected_height: int | None = None,
     render_kwargs: Dict[str, Any] | None = None,
+    overlay_unsafe_areas: bool = False,
 ) -> List[np.ndarray]:
     obs, _ = env.reset(seed=seed)
     frames: List[np.ndarray] = []
     ep_ret = 0.0
     disc_cost0 = 0.0
     disc = 1.0
+
+    unsafe_meta: Dict[str, Any] = {}
+    if overlay_unsafe_areas:
+        try:
+            task = env.env._env.unwrapped.task  # type: ignore[attr-defined]
+            xmin, ymin, xmax, ymax = [float(x) for x in task.placements_conf.extents]
+            safe_r_raw = getattr(task, "safe_radius", None)
+            safe_r = float(safe_r_raw) if safe_r_raw is not None else 0.0
+            has_safe_radius = safe_r_raw is not None
+            agent_r = float(getattr(task, "agent_body_radius", 0.1))
+            pillar_r = float(task.pillars.size) + safe_r + agent_r
+            gremlin_r = float(task.gremlin_vels.size) + safe_r + agent_r
+            unsafe_meta = {
+                "task": task,
+                "xmin": xmin,
+                "ymin": ymin,
+                "xmax": xmax,
+                "ymax": ymax,
+                "pillar_r": pillar_r,
+                "gremlin_r": gremlin_r,
+                "has_safe_radius": has_safe_radius,
+            }
+        except Exception:
+            unsafe_meta = {}
 
     def _overlay_metrics(frame: np.ndarray, ret_val: float, dcost_val: float) -> np.ndarray:
         from PIL import Image, ImageDraw, ImageFont
@@ -229,8 +259,8 @@ def rollout_frames(
             else:
                 arr = np.clip(arr, 0, 255).astype(np.uint8)
 
-        img = Image.fromarray(arr).convert("RGB")
-        draw = ImageDraw.Draw(img)
+        img = Image.fromarray(arr).convert("RGBA")
+        draw = ImageDraw.Draw(img, "RGBA")
         h, w = img.height, img.width
         font_size = max(24, int(h * 0.04))
         try:
@@ -250,7 +280,47 @@ def rollout_frames(
         draw.rectangle((x, y, x + box_w, y + box_h), fill=(0, 0, 0))
         draw.text((x + pad, y + pad), line1, fill=(255, 255, 255), font=font)
         draw.text((x + pad, y + pad + txt1_h + line_gap), line2, fill=(255, 255, 255), font=font)
-        return np.asarray(img)
+
+        if unsafe_meta:
+            task = unsafe_meta["task"]
+            xmin = unsafe_meta["xmin"]
+            ymin = unsafe_meta["ymin"]
+            xmax = unsafe_meta["xmax"]
+            ymax = unsafe_meta["ymax"]
+            pillar_r = unsafe_meta["pillar_r"]
+            gremlin_r = unsafe_meta["gremlin_r"]
+            has_safe_radius = bool(unsafe_meta.get("has_safe_radius", False))
+            map_w = max(1e-6, xmax - xmin)
+            map_h = max(1e-6, ymax - ymin)
+
+            def world_to_px(xy: np.ndarray) -> tuple[float, float]:
+                px = (float(xy[0]) - xmin) / map_w * (w - 1)
+                py = (1.0 - (float(xy[1]) - ymin) / map_h) * (h - 1)
+                return px, py
+
+            def radius_to_px(r: float) -> tuple[float, float]:
+                return r / map_w * (w - 1), r / map_h * (h - 1)
+
+            rx_p, ry_p = radius_to_px(float(pillar_r))
+            rx_g, ry_g = radius_to_px(float(gremlin_r))
+            ring_color = (255, 140, 0) if has_safe_radius else (255, 230, 80)
+
+            def draw_faded_ellipse(cx: float, cy: float, rx: float, ry: float, rgb: tuple[int, int, int]) -> None:
+                draw.ellipse(
+                    (cx - rx, cy - ry, cx + rx, cy + ry),
+                    fill=(rgb[0], rgb[1], rgb[2], 52),
+                    outline=(rgb[0], rgb[1], rgb[2], 220),
+                    width=2,
+                )
+
+            for p in task.pillars.pos:
+                cx, cy = world_to_px(np.asarray(p[:2], dtype=np.float64))
+                draw_faded_ellipse(cx, cy, rx_p, ry_p, ring_color)
+            for g in task.gremlin_vels.pos:
+                cx, cy = world_to_px(np.asarray(g[:2], dtype=np.float64))
+                draw_faded_ellipse(cx, cy, rx_g, ry_g, ring_color)
+
+        return np.asarray(img.convert("RGB"))
 
     frame = env.render(**(render_kwargs or {}))
     if frame is not None:
@@ -518,6 +588,7 @@ def main():
                 expected_width=args.render_width,
                 expected_height=args.render_height,
                 render_kwargs=render_kwargs,
+                overlay_unsafe_areas=args.overlay_unsafe_areas,
             )
             if args.save_gif:
                 out = checkpoint_dir / f"eval_rollout_{ckpt_stem}.gif"
@@ -558,6 +629,7 @@ def main():
                     expected_width=args.render_width,
                     expected_height=args.render_height,
                     render_kwargs=render_kwargs,
+                    overlay_unsafe_areas=args.overlay_unsafe_areas,
                 )
                 all_frames.append(frames)
             merged = _concat_frames(all_frames, pad_frames=10)
@@ -585,6 +657,7 @@ def main():
                     expected_width=args.render_width,
                     expected_height=args.render_height,
                     render_kwargs=render_kwargs,
+                    overlay_unsafe_areas=args.overlay_unsafe_areas,
                 )
                 out = checkpoint_dir / f"eval_rollout_{ckpt_stem}_seed_{s}.mp4"
                 save_frames(

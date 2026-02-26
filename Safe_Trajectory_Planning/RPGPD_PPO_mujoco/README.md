@@ -78,8 +78,8 @@ python train_rpgpdppo_pointnav.py \
   --epochs 300 \
   --num_roll_out 120 \
   --max_ep_len 1000 \
-  --rollout_parallel 16 \
-  --checkpoint_every 2 \
+  --rollout_parallel 15 \
+  --checkpoint_every 1 \
   --device mps \
   --eval_episodes 5 \
   --init_checkpoint runs_pointnav_rpgpd/ckpt_20260221_113542_epoch_052.pt
@@ -100,7 +100,7 @@ python train_rpgpdppo_pointnav.py \
 python train_rpgpdppo_pointnav.py \
   --config config_pointnav_RPGPD_DynObs.json \
   --epochs 300 \
-  --num_roll_out 120 \
+  --num_roll_out 30 \
   --max_ep_len 1000\
   --rollout_parallel 15 \
   --checkpoint_every 1 \
@@ -108,6 +108,32 @@ python train_rpgpdppo_pointnav.py \
   --eval_episodes 5 \
   --init_checkpoint runs_pointnav_rpgpd/ckpt_20260221_113542_epoch_052.pt \
   --fixed_rollout_seed_range "1-120" 
+
+python train_rpgpdppo_pointnav.py \
+  --config config_pointnav_RPGPD_DynObs.json \
+  --epochs 150 \
+  --num_roll_out 30 \
+  --max_ep_len 1000\
+  --rollout_parallel 15 \
+  --checkpoint_every 1 \
+  --device mps \
+  --eval_episodes 5 \
+  --init_checkpoint runs_pointnav_rpgpd/ckpt_20260221_113542_epoch_052.pt \
+  --fixed_rollout_seed_range "1-1" 
+
+  python train_rpgpdppo_pointnav.py \
+  --config config_pointnav_RPGPD_DynObs.json \
+  --epochs 150 \
+  --num_roll_out 60 \
+  --max_ep_len 1000\
+  --rollout_parallel 15 \
+  --checkpoint_every 1 \
+  --device mps \
+  --eval_episodes 5 \
+  --resume_checkpoint runs_pointnav_rpgpd/run_20260223_235742/ckpt_20260224_001417_epoch_015.pt
+  --fixed_rollout_seed_range "1-1" 
+
+
 
 
 Evaluate a checkpoint:
@@ -148,4 +174,10 @@ python eval_rpgpdppo_pointnav_rejection.py --config config_pointnav_RPGPD_DynObs
 
 
 
-run_20260221_163806/ckpt_20260221_172754_epoch_030.pt
+python eval_rpgpdppo_pointnav.py --config config_pointnav_RPGPD_DynObs.json \
+  --checkpoint runs_pointnav_rpgpd/ckpt_20260221_113542_epoch_052.pt \
+  --num_episodes 1 \
+  --save_mp4_all --render_width 1920 --render_height 1080 \
+  --camera_id 1
+  --overlay_unsafe_areas
+

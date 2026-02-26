@@ -171,6 +171,8 @@ class RolloutBuffer:
         self.ret_c_buf = np.zeros((size, num_costs), dtype=np.float32)
 
         self.done_buf = np.zeros(size, dtype=np.float32)
+        self.terminated_buf = np.zeros(size, dtype=np.float32)
+        self.truncated_buf = np.zeros(size, dtype=np.float32)
 
         self.gamma = float(gamma)
         self.lam = float(lam)
@@ -189,7 +191,7 @@ class RolloutBuffer:
         self._ep_cost_returns = []
         self._ep_ret_returns = []
 
-    def store(self, obs, act, logp, rew, costs, val_r, val_c, done):
+    def store(self, obs, act, logp, rew, costs, val_r, val_c, done, terminated: bool = False, truncated: bool = False):
         assert self.ptr < self.max_size
         self.obs_buf[self.ptr] = obs
         self.act_buf[self.ptr] = act
@@ -199,6 +201,8 @@ class RolloutBuffer:
         self.val_r_buf[self.ptr] = val_r
         self.val_c_buf[self.ptr] = val_c
         self.done_buf[self.ptr] = float(done)
+        self.terminated_buf[self.ptr] = float(terminated)
+        self.truncated_buf[self.ptr] = float(truncated)
         self.ptr += 1
 
     def finish_path(self, last_val_r: float, last_val_c: np.ndarray):
@@ -265,6 +269,9 @@ class RolloutBuffer:
             ret_r=torch.as_tensor(self.ret_r_buf[:end], dtype=torch.float32),
             adv_c=torch.as_tensor(self.adv_c_buf[:end], dtype=torch.float32),
             ret_c=torch.as_tensor(self.ret_c_buf[:end], dtype=torch.float32),
+            done=torch.as_tensor(self.done_buf[:end], dtype=torch.float32),
+            terminated=torch.as_tensor(self.terminated_buf[:end], dtype=torch.float32),
+            truncated=torch.as_tensor(self.truncated_buf[:end], dtype=torch.float32),
         )
 
 
@@ -306,6 +313,14 @@ class RPGPDPPOAgent:
             float(v_r.item()),
             v_c_np,
         )
+
+    @torch.no_grad()
+    def value(self, obs: np.ndarray) -> Tuple[float, np.ndarray]:
+        obs_arr = np.asarray(obs, dtype=np.float32).reshape(-1)
+        obs_t = torch.as_tensor(obs_arr, dtype=torch.float32, device=self.device).unsqueeze(0)
+        v_r = self.v_r(obs_t)
+        v_c = self.v_c(obs_t)
+        return float(v_r.item()), np.atleast_1d(v_c.squeeze(0).cpu().numpy().astype(np.float32))
 
     @staticmethod
     def _project_lambda(lam: np.ndarray, lam_max: float) -> np.ndarray:
@@ -441,6 +456,15 @@ class RPGPDPPOTrainer:
             lam=self.cfg.lam,
         )
 
+    @staticmethod
+    def _next_obs_for_value(next_obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
+        # VecEnv-style APIs may return reset obs on done; use terminal_observation for V(s_{t+1}) when available.
+        candidate = info.get("terminal_observation", next_obs)
+        try:
+            return np.asarray(candidate, dtype=np.float32).reshape(-1)
+        except Exception:
+            return np.asarray(next_obs, dtype=np.float32).reshape(-1)
+
     def collect_epoch(
         self,
         seed: Optional[int] = None,
@@ -476,8 +500,26 @@ class RPGPDPPOTrainer:
             if live:
                 self.env.render()
 
-            done = bool(terminated or truncated or (ep_len + 1 >= cfg.max_ep_len))
-            self.buf.store(obs, act, logp, rew, costs, v_r, v_c, done)
+            # Keep termination cause explicit:
+            # - terminated: true MDP terminal (goal/failure), no bootstrap
+            # - truncated: time-limit/cap only, bootstrap
+            time_limit_reached = bool(truncated or (ep_len + 1 >= cfg.max_ep_len))
+            terminated_step = bool(terminated)
+            truncated_step = bool(time_limit_reached and (not terminated_step))
+            # done is only for control flow (episode reset/logging), not for deciding bootstrap.
+            done = bool(terminated or time_limit_reached)
+            self.buf.store(
+                obs,
+                act,
+                logp,
+                rew,
+                costs,
+                v_r,
+                v_c,
+                done=done,
+                terminated=terminated_step,
+                truncated=truncated_step,
+            )
 
             ep_ret += float(rew)
             ep_cost += costs
@@ -485,8 +527,15 @@ class RPGPDPPOTrainer:
             obs = next_obs
 
             if done:
-                last_val_r = 0.0
-                last_val_c = np.zeros_like(ep_cost, dtype=np.float32)
+                # Bootstrap mask rule:
+                # - true terminal -> mask=0 -> last value is 0
+                # - truncation/time-limit -> mask=1 -> bootstrap from V(next_obs_for_value)
+                if bool(terminated):
+                    last_val_r = 0.0
+                    last_val_c = np.zeros_like(ep_cost, dtype=np.float32)
+                else:
+                    obs_for_value = self._next_obs_for_value(next_obs, info)
+                    last_val_r, last_val_c = self.agent.value(obs_for_value)
                 self.buf.finish_path(last_val_r=last_val_r, last_val_c=last_val_c)
 
                 ep_rets.append(ep_ret)
