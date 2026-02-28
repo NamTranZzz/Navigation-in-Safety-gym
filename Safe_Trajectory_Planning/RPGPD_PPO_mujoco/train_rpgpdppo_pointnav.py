@@ -10,7 +10,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
+import random
 import sys
 import time
 from datetime import datetime
@@ -48,6 +51,37 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint_every", type=int, default=1)
     # Parallel rollout workers (only used when num_roll_out is set)
     p.add_argument("--rollout_parallel", type=int, default=1)
+    p.add_argument(
+        "--reset_retries",
+        type=int,
+        default=8,
+        help="Retries per worker when env reset/model build fails with transient texture decode errors.",
+    )
+    p.add_argument(
+        "--reset_retry_backoff",
+        type=float,
+        default=0.2,
+        help="Base backoff seconds for reset retries (exponential).",
+    )
+    p.add_argument(
+        "--reset_lock_path",
+        type=str,
+        default="/tmp/safety_gymnasium_texture_reset.lock",
+        help="Cross-process lock file used to serialize env build/reset in parallel rollout.",
+    )
+    p.add_argument(
+        "--serialize_env_reset",
+        dest="serialize_env_reset",
+        action="store_true",
+        help="Serialize MuJoCo env build/reset across parallel workers to avoid texture decode races.",
+    )
+    p.add_argument(
+        "--no_serialize_env_reset",
+        dest="serialize_env_reset",
+        action="store_false",
+        help="Disable reset serialization lock.",
+    )
+    p.set_defaults(serialize_env_reset=True)
     # Accepted for CLI compatibility (not used in this script)
     p.add_argument("--eval_episodes", type=int, default=None)
     p.add_argument("--live", action="store_true", help="Render environment live during sequential rollout collection")
@@ -123,6 +157,28 @@ def load_checkpoint(path: Path, map_location: str) -> Dict[str, Any]:
     except TypeError:
         # Older PyTorch may not support the weights_only argument.
         return torch.load(path, map_location=map_location)
+
+
+def _is_texture_decode_error(exc: Exception) -> bool:
+    msg = str(exc)
+    return ("PNG file load error" in msg) and ("ADLER32" in msg)
+
+
+@contextlib.contextmanager
+def _reset_lock(lock_path: str):
+    # Best-effort cross-process file lock for Unix-like systems.
+    try:
+        import fcntl  # type: ignore
+    except Exception:
+        yield
+        return
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def save_metric_plot(
@@ -503,14 +559,42 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
     cfg = args["cfg"]
     algo_cfg = RPGPDPPOConfig(**args["algo_cfg"])
 
-    env_cfg = MujocoPointNavConfig(**cfg["env"])
-    env = MujocoPointNavEnv(env_cfg, render_mode=None)
     cmdp_cfg = CMDPConfig(
         cost_limits=tuple(cfg["cmdp"]["cost_limits"]),
         reward_scale=float(cfg["cmdp"].get("reward_scale", 1.0)),
         cost_scales=tuple(cfg["cmdp"].get("cost_scales", [1.0])),
     )
-    wrapped = RewardCostWrapper(env, cfg=cmdp_cfg)
+
+    wrapped: RewardCostWrapper | None = None
+    obs = None
+    info = None
+    max_retries = max(0, int(args.get("reset_retries", 8)))
+    retry_backoff = max(0.0, float(args.get("reset_retry_backoff", 0.2)))
+    serialize_reset = bool(args.get("serialize_env_reset", True))
+    lock_path = str(args.get("reset_lock_path", "/tmp/safety_gymnasium_texture_reset.lock"))
+    for attempt in range(max_retries + 1):
+        try:
+            ctx = _reset_lock(lock_path) if serialize_reset else contextlib.nullcontext()
+            with ctx:
+                env_cfg = MujocoPointNavConfig(**cfg["env"])
+                env = MujocoPointNavEnv(env_cfg, render_mode=None)
+                wrapped = RewardCostWrapper(env, cfg=cmdp_cfg)
+                obs, info = wrapped.reset(seed=args["seed"])
+            break
+        except Exception as exc:
+            if wrapped is not None:
+                try:
+                    wrapped.close()
+                except Exception:
+                    pass
+                wrapped = None
+            if _is_texture_decode_error(exc) and attempt < max_retries:
+                sleep_s = retry_backoff * (2.0**attempt) + random.uniform(0.0, retry_backoff)
+                time.sleep(sleep_s)
+                continue
+            raise
+
+    assert wrapped is not None and obs is not None and info is not None
 
     agent = RPGPDPPOAgent(
         obs_dim=wrapped.obs_dim(),
@@ -526,7 +610,6 @@ def _rollout_worker(args: Dict[str, Any]) -> Dict[str, Any]:
     agent.v_r.eval()
     agent.v_c.eval()
 
-    obs, info = wrapped.reset(seed=args["seed"])
     max_steps = int(args["max_steps"])
     ep_ret = 0.0
     ep_cost = np.zeros((len(info["cost_limits"]),), dtype=np.float32)
@@ -663,6 +746,8 @@ def main():
         clip_ratio=float(algo["clip_ratio"]),
         target_kl=float(algo["target_kl"]),
         pi_lr=float(algo["pi_lr"]),
+        pi_lr_mu=float(algo["pi_lr_mu"]) if algo.get("pi_lr_mu") is not None else None,
+        pi_lr_std=float(algo["pi_lr_std"]) if algo.get("pi_lr_std") is not None else None,
         vf_lr=float(algo["vf_lr"]),
         train_pi_iters=int(algo["train_pi_iters"]),
         train_v_iters=int(algo["train_v_iters"]),
@@ -823,6 +908,10 @@ def main():
                     "seed": s,
                     "max_steps": algo_cfg.max_ep_len,
                     "device": rollout_device,
+                    "reset_retries": int(args.reset_retries),
+                    "reset_retry_backoff": float(args.reset_retry_backoff),
+                    "serialize_env_reset": bool(args.serialize_env_reset),
+                    "reset_lock_path": str(args.reset_lock_path),
                 }
                 for s in seeds
             ]
@@ -904,14 +993,33 @@ def main():
         jr_mean = float(upd.get("Jr_mean", 0.0))
         jr_std = float(upd.get("Jr_std", 0.0))
         viol0 = float(upd.get("viol_0", 0.0))
+        grad_log_std_mean_abs = float(upd.get("grad_log_std_mean_abs", 0.0))
+        grad_std_mean_abs = float(upd.get("grad_std_mean_abs", 0.0))
+        grad_mu_mean_abs = float(upd.get("grad_mu_mean_abs", 0.0))
+        clipfrac = float(upd.get("clipfrac", 0.0))
+        ratio_mean = float(upd.get("ratio_mean", 1.0))
+        ratio_min = float(upd.get("ratio_min", 1.0))
+        ratio_max = float(upd.get("ratio_max", 1.0))
+        pi_stop = int(upd.get("pi_early_stop_iter", 0))
         epoch_sec = time.perf_counter() - epoch_t0
+        with torch.no_grad():
+            policy_std = torch.exp(agent.pi.log_std.detach()).clamp(1e-4, 10.0).cpu().numpy()
+        std_mean = float(np.mean(policy_std))
+        std_min = float(np.min(policy_std))
+        std_max = float(np.max(policy_std))
 
         print(
             f"Epoch {ep:03d} | Ret {collect['EpRetMean']:.2f} (std {collect.get('EpRetStd', 0.0):.3f}) | "
             f"Jr {jr_mean:.3f} (std {jr_std:.3f}) | "
             f"C0 {collect.get('EpCost0Mean', 0.0):.2f} (std {collect.get('EpCost0Std', 0.0):.3f}) | "
             f"Jc0 {jc0_mean:.3f} (std {jc0_std:.3f}) | viol0 {viol0:.3f} | "
-            f"KL {upd.get('kl', 0.0):.4f} | λ0 {lam0:.3f} | time {epoch_sec:.2f}s"
+            f"KL {upd.get('kl', 0.0):.4f} | λ0 {lam0:.3f} | "
+            f"pi_std mean/min/max {std_mean:.4f}/{std_min:.4f}/{std_max:.4f} | "
+            f"|dL/dmu| {grad_mu_mean_abs:.3e} | |dL/dlogstd| {grad_log_std_mean_abs:.3e} | "
+            f"|dL/dstd| {grad_std_mean_abs:.3e} | "
+            f"clipfrac {clipfrac:.3f} ratio {ratio_mean:.3f}[{ratio_min:.3f},{ratio_max:.3f}] | "
+            f"pi_stop {pi_stop} | "
+            f"time {epoch_sec:.2f}s"
         )
 
         if args.checkpoint_every > 0 and (ep % args.checkpoint_every == 0):

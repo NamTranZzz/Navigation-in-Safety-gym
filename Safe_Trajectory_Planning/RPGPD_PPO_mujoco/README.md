@@ -133,7 +133,16 @@ python train_rpgpdppo_pointnav.py \
   --resume_checkpoint runs_pointnav_rpgpd/run_20260223_235742/ckpt_20260224_001417_epoch_015.pt
   --fixed_rollout_seed_range "1-1" 
 
-
+python train_rpgpdppo_pointnav.py \
+  --config config_pointnav_RPGPD_DynObs.json \
+  --epochs 150 \
+  --num_roll_out 6 \
+  --max_ep_len 500\
+  --rollout_parallel 6 \
+  --checkpoint_every 1 \
+  --device mps \
+  --eval_episodes 5 \
+  --fixed_rollout_seed_range "1-1" 
 
 
 Evaluate a checkpoint:

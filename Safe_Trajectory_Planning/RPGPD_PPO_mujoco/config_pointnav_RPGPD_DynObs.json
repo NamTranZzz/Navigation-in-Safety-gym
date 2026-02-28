@@ -4,8 +4,8 @@
     "max_steps": 1000,
     "action_scale": 1.0,
     "env_config_overrides": {
-  "reward_conf.goal_time_coef": 0.005,
-  "lidar_conf.num_bins": 64
+  "reward_conf.goal_time_coef": 0.01,
+  "lidar_conf.num_bins": 32
 }
   },
   "cmdp": {
@@ -20,30 +20,30 @@
   "algo": {
     "gamma": 0.999,
     "lam": 0.97,
-    "clip_ratio": 0.02,
-    "target_kl": 0.001,
-    "pi_lr": 0.01,
-    "vf_lr": 0.01,
-    "train_pi_iters": 20,
-    "train_v_iters": 20,
-    "max_grad_norm": 0.5,
-    "steps_per_epoch": 30000,
+    "clip_ratio": 0.2,
+    "target_kl": 0.01,
+    "pi_lr": 0.0001,
+    "pi_lr_mu": 0.0001,
+    "pi_lr_std": 0.1,
+    "vf_lr": 0.0001,
+    "train_pi_iters": 5,
+    "train_v_iters": 5,
+    "max_grad_norm": 1,
     "max_ep_len": 1000,
     "num_roll_out": null,
     "hidden_sizes": [
       255,
       255
     ],
-    "entropy_coef": 0.1,
+    "entropy_coef": 0.0005,
     "normalize_advantages": true,
-    "dual_lr": 0.01,
+    "dual_lr": 0,
     "dual_tau": 0.1,
-    "lambda_init": 0,
+    "lambda_init": 0.7,
     "lambda_max": 30.0,
     "dual_scale_one_minus_gamma": false
   },
   "training": {
-    "seed": 0,
-    "total_steps": 10000000
+    "seed": 0
   }
 }

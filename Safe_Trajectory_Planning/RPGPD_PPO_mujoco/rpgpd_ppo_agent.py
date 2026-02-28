@@ -124,6 +124,8 @@ class RPGPDPPOConfig:
 
     # Optimization
     pi_lr: float = 3e-4
+    pi_lr_mu: Optional[float] = None
+    pi_lr_std: Optional[float] = None
     vf_lr: float = 1e-3
     train_pi_iters: int = 80
     train_v_iters: int = 80
@@ -341,13 +343,33 @@ class RPGPDPPOAgent:
     def _ppo_update(self, obs: torch.Tensor, act: torch.Tensor, logp_old: torch.Tensor, adv_L: torch.Tensor) -> Dict[str, float]:
         cfg = self.cfg
         self.pi.train()
-        pi_opt = optim.Adam(self.pi.parameters(), lr=cfg.pi_lr)
+        pi_lr_mu = float(cfg.pi_lr_mu) if cfg.pi_lr_mu is not None else float(cfg.pi_lr)
+        pi_lr_std = float(cfg.pi_lr_std) if cfg.pi_lr_std is not None else float(cfg.pi_lr)
+        pi_opt = optim.Adam(
+            [
+                {"params": self.pi.mu_net.parameters(), "lr": pi_lr_mu},
+                {"params": [self.pi.log_std], "lr": pi_lr_std},
+            ]
+        )
 
-        early_stop_iter = 0
+        pi_iters_done = 0
+        last_grad_log_std: torch.Tensor | None = None
+        last_std: torch.Tensor | None = None
+        last_clipfrac = 0.0
+        last_ratio_mean = 1.0
+        last_ratio_min = 1.0
+        last_ratio_max = 1.0
+        last_grad_mu_mean_abs = 0.0
         for it in range(cfg.train_pi_iters):
+            pi_iters_done = it + 1
             logp = self.pi.log_prob(obs, act)
             ratio = torch.exp(logp - logp_old)
             ratio_clip = torch.clamp(ratio, 1.0 - cfg.clip_ratio, 1.0 + cfg.clip_ratio)
+            clip_mask = (ratio > (1.0 + cfg.clip_ratio)) | (ratio < (1.0 - cfg.clip_ratio))
+            last_clipfrac = float(clip_mask.float().mean().item())
+            last_ratio_mean = float(ratio.mean().item())
+            last_ratio_min = float(ratio.min().item())
+            last_ratio_max = float(ratio.max().item())
 
             surr1 = ratio * adv_L
             surr2 = ratio_clip * adv_L
@@ -361,6 +383,15 @@ class RPGPDPPOAgent:
 
             pi_opt.zero_grad(set_to_none=True)
             loss_pi.backward()
+            if self.pi.log_std.grad is not None:
+                last_grad_log_std = self.pi.log_std.grad.detach().clone()
+                last_std = torch.exp(self.pi.log_std.detach()).clamp(1e-4, 10.0)
+            mu_grad_vals = []
+            for p in self.pi.mu_net.parameters():
+                if p.grad is not None:
+                    mu_grad_vals.append(p.grad.detach().abs().mean())
+            if mu_grad_vals:
+                last_grad_mu_mean_abs = float(torch.stack(mu_grad_vals).mean().item())
             if cfg.max_grad_norm is not None and cfg.max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(self.pi.parameters(), cfg.max_grad_norm)
             pi_opt.step()
@@ -368,7 +399,6 @@ class RPGPDPPOAgent:
             with torch.no_grad():
                 kl = (logp_old - self.pi.log_prob(obs, act)).mean().item()
             if kl > cfg.target_kl:
-                early_stop_iter = it + 1
                 break
 
         with torch.no_grad():
@@ -376,7 +406,23 @@ class RPGPDPPOAgent:
             kl = (logp_old - logp).mean().item()
             entropy = self.pi._dist(obs).entropy().sum(dim=-1).mean().item()
 
-        return {"kl": float(kl), "entropy": float(entropy), "pi_early_stop_iter": float(early_stop_iter)}
+        out = {"kl": float(kl), "entropy": float(entropy), "pi_early_stop_iter": float(pi_iters_done)}
+        out["clipfrac"] = float(last_clipfrac)
+        out["ratio_mean"] = float(last_ratio_mean)
+        out["ratio_min"] = float(last_ratio_min)
+        out["ratio_max"] = float(last_ratio_max)
+        out["grad_mu_mean_abs"] = float(last_grad_mu_mean_abs)
+        if last_grad_log_std is not None and last_std is not None:
+            grad_std = last_grad_log_std / (last_std + 1e-8)
+            out["grad_log_std_mean_abs"] = float(last_grad_log_std.abs().mean().item())
+            out["grad_log_std_max_abs"] = float(last_grad_log_std.abs().max().item())
+            out["grad_std_mean_abs"] = float(grad_std.abs().mean().item())
+            out["grad_std_max_abs"] = float(grad_std.abs().max().item())
+            for i, g in enumerate(last_grad_log_std.detach().cpu().numpy().tolist()):
+                out[f"grad_log_std_{i}"] = float(g)
+            for i, g in enumerate(grad_std.detach().cpu().numpy().tolist()):
+                out[f"grad_std_{i}"] = float(g)
+        return out
 
     def _update_critics(self, obs: torch.Tensor, ret_r: torch.Tensor, ret_c: torch.Tensor) -> Dict[str, float]:
         cfg = self.cfg
