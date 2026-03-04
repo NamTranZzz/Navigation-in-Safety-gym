@@ -13,10 +13,10 @@
     "cost_limits": [5.0],
     "reward_scale": 1.0,
     "cost_scales": [1.0],
-    "cost_coeffs": [-0.15]
+    "cost_coeffs": [-0.3]
   },
   "algo": {
-    "num_steps_per_env": 200,
+    "num_steps_per_env": 50,
     "num_learning_epochs": 5,
     "num_mini_batches": 4,
     "clip_param": 0.2,
@@ -24,7 +24,7 @@
     "lam": 0.97,
     "entropy_coef": 0.0005,
     "value_loss_coef": 1.0,
-    "learning_rate": 0.0005,
+    "learning_rate": 0.0003,
     "max_grad_norm": 1.0,
     "desired_kl": 0.01,
     "schedule": "adaptive",

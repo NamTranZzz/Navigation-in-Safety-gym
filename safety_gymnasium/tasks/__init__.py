@@ -35,6 +35,7 @@ from safety_gymnasium.tasks.safe_navigation.DynObs.button_level0 import DynObsLe
 from safety_gymnasium.tasks.safe_navigation.DynObs.button_level1 import DynObsLevel1
 from safety_gymnasium.tasks.safe_navigation.DynObs.button_level2 import DynObsLevel2
 from safety_gymnasium.tasks.safe_navigation.DynObs.button_level3 import DynObsLevel3
+from safety_gymnasium.tasks.safe_navigation.DynObs.button_level4 import DynObsLevel4
 from safety_gymnasium.tasks.safe_navigation.goal.goal_base import GoalBase
 from safety_gymnasium.tasks.safe_navigation.goal.goal_level0 import GoalLevel0
 from safety_gymnasium.tasks.safe_navigation.goal.goal_level1 import GoalLevel1

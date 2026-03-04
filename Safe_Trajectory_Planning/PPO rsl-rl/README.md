@@ -152,6 +152,13 @@ python train_ppo_pointnav.py \
   --num_envs 12 \
   --max_iterations 150 \
   --log_dir runs_pointnav_ppo_rsl
+
+  python train_ppo_pointnav.py \
+  --config config_pointnav_PPO_Button.json \
+  --device cpu \
+  --num_envs 20 \
+  --max_iterations 300 \
+  --log_dir runs_pointnav_ppo_rsl
 ------------------------
 tensorboard --logdir runs_pointnav_ppo_rsl/run_20260228_175229 --port 6006 --bind_all
 ssh -L 6006:localhost:6006 trannam@Host-003
@@ -199,7 +206,7 @@ python eval_ppo_pointnav.py \
 
 python eval_ppo_pointnav.py \
   --config config_pointnav_PPO_DynObs.json \
-  --checkpoint runs_pointnav_ppo_rsl/run_20260228_190347/model_600.pt \
+  --checkpoint runs_pointnav_ppo_rsl/run_20260301_235136/model_975.pt \
   --num_episodes 5 \
   --device cpu \
   --camera_id 1 \

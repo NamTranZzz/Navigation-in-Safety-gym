@@ -211,12 +211,6 @@ def main() -> None:
                 kl_distance = None
 
         enriched = dict(loss_dict)
-        if "surrogate" in loss_dict:
-            enriched["surrogate_loss"] = float(loss_dict["surrogate"])
-        if "value" in loss_dict:
-            enriched["value_loss"] = float(loss_dict["value"])
-        if "entropy" in loss_dict:
-            enriched["entropy_loss"] = float(loss_dict["entropy"])
         if kl_distance is not None:
             enriched["kl_distance"] = float(kl_distance)
         return enriched
