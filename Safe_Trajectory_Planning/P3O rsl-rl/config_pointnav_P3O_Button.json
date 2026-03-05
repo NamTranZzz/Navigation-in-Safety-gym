@@ -1,0 +1,55 @@
+{
+  "env": {
+    "env_id": "SafetyPointGoal0-v0",
+    "max_steps": 1000,
+    "action_scale": 1.0,
+    "env_config_overrides": {
+      "reward_conf.goal_time_coef": 0.01,
+      "lidar_conf.num_bins": 32
+    },
+    "env_kwargs": {}
+  },
+  "cmdp": {
+    "cost_limits": [
+      5.0
+    ],
+    "reward_scale": 1.0,
+    "cost_scales": [
+      1.0
+    ],
+    "cost_coeffs": [
+      0.0
+    ]
+  },
+  "algo": {
+    "num_steps_per_env": 1000,
+    "num_learning_epochs": 10,
+    "num_mini_batches": 4,
+    "clip_param": 0.2,
+    "gamma": 0.999,
+    "lam": 0.97,
+    "entropy_coef": 0.0005,
+    "value_loss_coef": 1.0,
+    "learning_rate": 0.0001,
+    "max_grad_norm": 1.0,
+    "desired_kl": 0.01,
+    "schedule": "adaptive",
+    "hidden_dims": [
+      256,
+      256,
+      256
+    ],
+    "activation": "elu",
+    "init_noise_std": 1.0,
+    "kappa": 20.0,
+    "cost_value_loss_coef": 1.0,
+    "value_learning_rate": 0.001,
+    "normalize_reward_advantage": true,
+    "normalize_cost_advantages": true
+  },
+  "training": {
+    "seed": 0,
+    "max_iterations": 1000,
+    "save_interval": 25
+  }
+}
