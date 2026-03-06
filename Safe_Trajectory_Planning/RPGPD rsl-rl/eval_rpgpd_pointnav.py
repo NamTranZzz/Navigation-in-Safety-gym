@@ -17,8 +17,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate rsl-rl P3O checkpoint on Safety-Gymnasium point navigation.")
-    parser.add_argument("--config", type=str, default="config_pointnav_P3O_DynObs.json")
+    parser = argparse.ArgumentParser(description="Evaluate rsl-rl RPGPD checkpoint on Safety-Gymnasium point navigation.")
+    parser.add_argument("--config", type=str, default="config_pointnav_RPGPD_DynObs.json")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to rsl-rl checkpoint (e.g., model_149.pt).")
     parser.add_argument("--num_episodes", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
@@ -70,7 +70,7 @@ def make_policy(
 ):
     from cmdp_wrapper import CMDPConfig, RewardCostWrapper
     from mujoco_env import MujocoPointNavConfig, MujocoPointNavEnv
-    from p3o_agent import RslP3OConfig, SafetyGymVecEnv, build_train_cfg
+    from rpgpd_agent import RslRPGPDConfig, SafetyGymVecEnv, build_train_cfg
 
     try:
         from rsl_rl.runners import OnPolicyRunner
@@ -108,7 +108,7 @@ def make_policy(
         gamma=float(algo_cfg.get("gamma", 0.99)),
     )
 
-    ppo_cfg = RslP3OConfig(
+    rpgpd_cfg = RslRPGPDConfig(
         seed=seed,
         max_iterations=int(tr_cfg.get("max_iterations", 300)),
         save_interval=int(tr_cfg.get("save_interval", 25)),
@@ -127,8 +127,16 @@ def make_policy(
         hidden_dims=tuple(algo_cfg.get("hidden_dims", [256, 256, 256])),
         activation=str(algo_cfg.get("activation", "elu")),
         init_noise_std=float(algo_cfg.get("init_noise_std", 1.0)),
+        dual_lr=float(algo_cfg.get("dual_lr", 0.1)),
+        dual_tau=float(algo_cfg.get("dual_tau", 0.0)),
+        lambda_init=float(algo_cfg.get("lambda_init", 0.0)),
+        lambda_max=float(algo_cfg.get("lambda_max", 1000.0)),
+        cost_value_loss_coef=float(algo_cfg.get("cost_value_loss_coef", 1.0)),
+        value_learning_rate=float(algo_cfg.get("value_learning_rate", 1e-3)),
+        normalize_reward_advantage=bool(algo_cfg.get("normalize_reward_advantage", True)),
+        normalize_cost_advantages=bool(algo_cfg.get("normalize_cost_advantages", True)),
     )
-    runner_cfg = build_train_cfg(ppo_cfg, experiment_name="eval", run_name="eval")
+    runner_cfg = build_train_cfg(rpgpd_cfg, experiment_name="eval", run_name="eval")
     runner = OnPolicyRunner(env=vec_env, train_cfg=runner_cfg, log_dir=None, device=device)
     runner.load(checkpoint, map_location=device)
     policy = runner.get_inference_policy(device=device)

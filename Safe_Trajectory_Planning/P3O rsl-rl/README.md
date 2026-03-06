@@ -19,7 +19,6 @@ with separate reward/cost critics and separate reward/cost GAE.
 
 ## Important design choices
 - Reward-cost separation is enforced for training:
-  - `cmdp.cost_coeffs` are forced to zero in training.
   - Training reward uses unshaped env reward.
 - Number of cost constraints is inferred from env config (`cost_limits`) and handled generically.
 
@@ -44,10 +43,17 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python train_p3o_pointnav_parallel.py \
 ## Evaluate
 ```bash
 python eval_p3o_pointnav.py \
-  --config config_pointnav_P3O_DynObs.json \
-  --checkpoint runs_pointnav_p3o_rsl/run_YYYYMMDD_HHMMSS/model_299.pt \
+  --config config_pointnav_P3O_DynObs_dense.json \
+  --checkpoint runs_pointnav_p3o_rsl_parallel/run_20260305_183616/model_299.pt \
   --num_episodes 10 \
-  --device cpu
+  --device cpu \
+  --camera_id 1 \
+  --render_width 1920 \
+  --render_height 1080 \
+  --save_mp4_all runs_pointnav_ppo_rsl/eval_all_episodes.mp4 \
+  --mp4_macro_block_size 1 \
+  --mp4_crf 17 \
+  --mp4_preset slow
 ```
 
 ## Rejection evaluate

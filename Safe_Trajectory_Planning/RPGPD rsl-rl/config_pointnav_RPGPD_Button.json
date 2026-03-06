@@ -1,25 +1,17 @@
 {
   "env": {
-    "env_id": "SafetyPointDynObs4-v0",
+    "env_id": "SafetyPointGoal0-v0",
     "max_steps": 1000,
     "action_scale": 1.0,
     "env_config_overrides": {
       "reward_conf.goal_time_coef": 0.01,
-      "cost_conf.constrain_indicator": false,
-      "lidar_conf.num_bins": 32,
-      "lidar_conf.max_dist": 3.0,
-      "dense_cost_epsilon": 0.001,
-      "dense_cost_lidar_range": 3.0,
-      "dense_cost_w_static": 1.0,
-      "dense_cost_w_dynamic": 1.0,
-      "dense_cost_w_smooth": 1.0,
-      "agent_body_radius": 0.1
+      "lidar_conf.num_bins": 32
     },
     "env_kwargs": {}
   },
   "cmdp": {
     "cost_limits": [
-      100.0
+      5.0
     ],
     "reward_scale": 1.0,
     "cost_scales": [
@@ -28,7 +20,7 @@
   },
   "algo": {
     "num_steps_per_env": 1000,
-    "num_learning_epochs": 20,
+    "num_learning_epochs": 10,
     "num_mini_batches": 4,
     "clip_param": 0.2,
     "gamma": 0.999,
@@ -41,11 +33,15 @@
     "schedule": "adaptive",
     "hidden_dims": [
       256,
+      256,
       256
     ],
     "activation": "elu",
     "init_noise_std": 1.0,
-    "kappa": 0.2,
+    "dual_lr": 0.1,
+    "dual_tau": 0.1,
+    "lambda_init": 0.0,
+    "lambda_max": 1000.0,
     "cost_value_loss_coef": 1.0,
     "value_learning_rate": 0.001,
     "normalize_reward_advantage": true,

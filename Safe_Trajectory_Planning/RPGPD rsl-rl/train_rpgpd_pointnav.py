@@ -18,20 +18,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Parallel P3O training for Safety-Gymnasium point navigation.")
-    parser.add_argument("--config", type=str, default="config_pointnav_P3O_DynObs.json")
+    parser = argparse.ArgumentParser(description="RPGPD (rsl-rl actor + custom primal-dual update) for Safety-Gymnasium point navigation.")
+    parser.add_argument("--config", type=str, default="config_pointnav_RPGPD_DynObs.json")
     parser.add_argument("--device", type=str, default="cpu", help="cpu|cuda|mps")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--num_envs", type=int, default=8)
     parser.add_argument("--max_iterations", type=int, default=None)
-    parser.add_argument("--log_dir", type=str, default="runs_pointnav_p3o_rsl")
-    parser.add_argument(
-        "--start_method",
-        type=str,
-        default="spawn",
-        choices=["spawn", "fork", "forkserver"],
-        help="multiprocessing start method for rollout workers",
-    )
+    parser.add_argument("--log_dir", type=str, default="runs_pointnav_rpgpd_rsl")
     return parser.parse_args()
 
 
@@ -66,13 +59,77 @@ def _tuple_floats(xs: Any, default: tuple[float, ...]) -> tuple[float, ...]:
     return vals if len(vals) > 0 else default
 
 
+def _patch_runner_log_no_loss_for_diagnostics(runner: Any) -> None:
+    """Log selected diagnostics as episode stats instead of algorithm losses."""
+    import contextlib
+    import io
+    import re
+    import sys as _sys
+
+    if not hasattr(runner, "log"):
+        return
+    orig_log = runner.log
+
+    def _is_diag_key(key: str) -> bool:
+        return (
+            key.startswith("dual_lambda_")
+            or key.startswith("constraint_violation_")
+            or key.startswith("discounted_cost_")
+            or key == "kl_distance"
+        )
+
+    def _extract_diag_from_losses(losses: Any) -> Dict[str, float]:
+        diag: Dict[str, float] = {}
+        if isinstance(losses, dict):
+            for key in list(losses.keys()):
+                if _is_diag_key(str(key)):
+                    diag[str(key)] = float(losses.pop(key))
+        elif isinstance(losses, list):
+            for item in losses:
+                if isinstance(item, dict):
+                    for key in list(item.keys()):
+                        if _is_diag_key(str(key)):
+                            diag[str(key)] = float(item.pop(key))
+        return diag
+
+    text_pattern = re.compile(
+        r"(Mean\s+(?:kl_distance|dual_lambda_\d+|constraint_violation_\d+|discounted_cost_\d+))\s+loss:",
+    )
+
+    def patched_log(*args, **kwargs):
+        locs = None
+        if len(args) > 0 and isinstance(args[0], dict):
+            locs = args[0]
+        elif isinstance(kwargs.get("locs"), dict):
+            locs = kwargs["locs"]
+
+        if isinstance(locs, dict):
+            diag = _extract_diag_from_losses(locs.get("losses", {}))
+            if diag:
+                ep_infos = locs.get("ep_infos")
+                if ep_infos is None or not isinstance(ep_infos, list):
+                    ep_infos = []
+                    locs["ep_infos"] = ep_infos
+                fake_ep = {k: torch.tensor([v], dtype=torch.float32) for k, v in diag.items()}
+                ep_infos.append(fake_ep)
+
+        out_buf = io.StringIO()
+        with contextlib.redirect_stdout(out_buf):
+            orig_log(*args, **kwargs)
+        text = text_pattern.sub(r"\1:", out_buf.getvalue())
+        _sys.stdout.write(text)
+        _sys.stdout.flush()
+
+    runner.log = patched_log
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
 
-    from cmdp_wrapper import CMDPConfig
-    from mujoco_env import MujocoPointNavConfig
-    from p3o_agent_parallel import ParallelSafetyGymVecEnv, P3OTrainerHook, RslP3OConfig, build_train_cfg
+    from cmdp_wrapper import CMDPConfig, RewardCostWrapper
+    from mujoco_env import MujocoPointNavConfig, MujocoPointNavEnv
+    from rpgpd_agent import RPGPDTrainerHook, RslRPGPDConfig, SafetyGymVecEnv, build_train_cfg
 
     device = resolve_device(args.device)
     seed = int(args.seed if args.seed is not None else cfg.get("training", {}).get("seed", 0))
@@ -101,17 +158,19 @@ def main() -> None:
         cost_scales=cost_scales,
     )
 
-    vec_env = ParallelSafetyGymVecEnv(
-        mujoco_cfg=mujoco_cfg,
-        cmdp_cfg=reward_cost_cfg,
+    def env_factory() -> RewardCostWrapper:
+        env = MujocoPointNavEnv(mujoco_cfg, render_mode=None)
+        return RewardCostWrapper(env, cfg=reward_cost_cfg)
+
+    vec_env = SafetyGymVecEnv(
+        env_factory=env_factory,
         num_envs=int(args.num_envs),
         device=device,
         seed=seed,
         gamma=float(algo_cfg.get("gamma", 0.99)),
-        start_method=str(args.start_method),
     )
 
-    p3o_cfg = RslP3OConfig(
+    rpgpd_cfg = RslRPGPDConfig(
         seed=seed,
         max_iterations=int(args.max_iterations if args.max_iterations is not None else train_cfg.get("max_iterations", 300)),
         save_interval=int(train_cfg.get("save_interval", 25)),
@@ -130,7 +189,10 @@ def main() -> None:
         hidden_dims=tuple(int(x) for x in algo_cfg.get("hidden_dims", [256, 256, 256])),
         activation=str(algo_cfg.get("activation", "elu")),
         init_noise_std=float(algo_cfg.get("init_noise_std", 1.0)),
-        kappa=float(algo_cfg.get("kappa", 20.0)),
+        dual_lr=float(algo_cfg.get("dual_lr", 0.1)),
+        dual_tau=float(algo_cfg.get("dual_tau", 0.0)),
+        lambda_init=float(algo_cfg.get("lambda_init", 0.0)),
+        lambda_max=float(algo_cfg.get("lambda_max", 1000.0)),
         cost_value_loss_coef=float(algo_cfg.get("cost_value_loss_coef", 1.0)),
         value_learning_rate=float(algo_cfg.get("value_learning_rate", 1e-3)),
         normalize_reward_advantage=bool(algo_cfg.get("normalize_reward_advantage", True)),
@@ -145,15 +207,14 @@ def main() -> None:
     resolved_cfg = {
         "env": asdict(mujoco_cfg),
         "cmdp": asdict(reward_cost_cfg),
-        "algo": asdict(p3o_cfg),
+        "algo": asdict(rpgpd_cfg),
         "training": {
             "seed": seed,
             "device": device,
             "num_envs": int(args.num_envs),
-            "max_iterations": int(p3o_cfg.max_iterations),
-            "save_interval": int(p3o_cfg.save_interval),
+            "max_iterations": int(rpgpd_cfg.max_iterations),
+            "save_interval": int(rpgpd_cfg.save_interval),
             "log_dir": str(log_dir),
-            "start_method": str(args.start_method),
         },
     }
     (log_dir / "resolved_config.json").write_text(json.dumps(resolved_cfg, indent=2), encoding="utf-8")
@@ -165,7 +226,7 @@ def main() -> None:
         raise ImportError("rsl-rl is required for this trainer. Install it, e.g. `pip install rsl-rl`.") from exc
 
     runner_cfg = build_train_cfg(
-        cfg=p3o_cfg,
+        cfg=rpgpd_cfg,
         experiment_name=str(Path(args.log_dir).name),
         run_name=run_name,
     )
@@ -183,18 +244,19 @@ def main() -> None:
         log_dir=runner_log_dir,
         device=device,
     )
+    _patch_runner_log_no_loss_for_diagnostics(runner)
 
-    p3o_hook = P3OTrainerHook(
+    rpgpd_hook = RPGPDTrainerHook(
         runner=runner,
         vec_env=vec_env,
-        cfg=p3o_cfg,
+        cfg=rpgpd_cfg,
         cost_limits=np.asarray(cost_limits, dtype=np.float32),
         device=device,
     )
-    p3o_hook.install()
+    rpgpd_hook.install()
 
     runner.learn(
-        num_learning_iterations=int(p3o_cfg.max_iterations),
+        num_learning_iterations=int(rpgpd_cfg.max_iterations),
         init_at_random_ep_len=True,
     )
     vec_env.close()

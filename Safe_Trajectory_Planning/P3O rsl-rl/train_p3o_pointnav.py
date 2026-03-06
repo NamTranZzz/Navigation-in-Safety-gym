@@ -88,16 +88,10 @@ def main() -> None:
     cost_scales = _tuple_floats(cmdp_cfg.get("cost_scales", [1.0] * len(cost_limits)), tuple([1.0] * len(cost_limits)))
     if len(cost_scales) != len(cost_limits):
         raise ValueError("cmdp.cost_scales length must match cmdp.cost_limits")
-
-    cfg_cost_coeffs = cmdp_cfg.get("cost_coeffs", [0.0] * len(cost_limits))
-    if any(abs(float(x)) > 1e-12 for x in cfg_cost_coeffs):
-        print("[Warn] P3O requires reward/cost separation; forcing cmdp.cost_coeffs to zeros during training.")
-
     reward_cost_cfg = CMDPConfig(
         cost_limits=cost_limits,
         reward_scale=float(cmdp_cfg.get("reward_scale", 1.0)),
         cost_scales=cost_scales,
-        cost_coeffs=tuple([0.0] * len(cost_limits)),
     )
 
     def env_factory() -> RewardCostWrapper:

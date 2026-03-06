@@ -16,9 +16,6 @@
     "reward_scale": 1.0,
     "cost_scales": [
       1.0
-    ],
-    "cost_coeffs": [
-      0.0
     ]
   },
   "algo": {

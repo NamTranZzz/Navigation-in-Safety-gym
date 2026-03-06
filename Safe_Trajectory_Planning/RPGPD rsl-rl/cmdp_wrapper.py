@@ -47,6 +47,11 @@ class RewardCostWrapper:
         self.reward_fn = reward_fn
         self.cost_fns = list(cost_fns) if cost_fns is not None else None
 
+        # Infer native env cost dimension once so the wrapper can adapt from
+        # scalar config values to vector-valued costs automatically.
+        self._env_cost_dim = self._infer_env_cost_dim()
+        self._normalize_cmdp_config_to_cost_dim()
+
         if len(self.cfg.cost_limits) != len(self.cfg.cost_scales):
             raise ValueError(
                 f"cost_limits length ({len(self.cfg.cost_limits)}) must match cost_scales ({len(self.cfg.cost_scales)})"
@@ -55,6 +60,42 @@ class RewardCostWrapper:
             raise ValueError(
                 f"cost_limits length ({len(self.cfg.cost_limits)}) must match cost_fns ({len(self.cost_fns)})"
             )
+
+    def _infer_env_cost_dim(self) -> int:
+        if self.cost_fns is not None:
+            return int(len(self.cost_fns))
+        try:
+            # Probe one transition to inspect native cost vector shape.
+            self.env.reset(seed=None)
+            a = np.zeros((int(self.env.act_dim()),), dtype=np.float32)
+            out = self.env.step(a)
+            if len(out) != 5:
+                raise ValueError(f"Unexpected wrapped env.step output length while probing: {len(out)}")
+            _, _, cost, _, _ = out
+            c = np.asarray(cost, dtype=np.float32).reshape(-1)
+            dim = int(c.size) if int(c.size) > 0 else 1
+        except Exception:
+            dim = int(len(self.cfg.cost_limits)) if len(self.cfg.cost_limits) > 0 else 1
+        finally:
+            # Reset back to a clean start after probe.
+            try:
+                self.env.reset(seed=None)
+            except Exception:
+                pass
+        return int(max(1, dim))
+
+    @staticmethod
+    def _expand_tuple(values: Tuple[float, ...], target_dim: int, name: str) -> Tuple[float, ...]:
+        if len(values) == target_dim:
+            return tuple(float(v) for v in values)
+        if len(values) == 1 and target_dim > 1:
+            return tuple([float(values[0])] * target_dim)
+        raise ValueError(f"{name} length ({len(values)}) must be 1 or match inferred cost dim ({target_dim})")
+
+    def _normalize_cmdp_config_to_cost_dim(self) -> None:
+        target_dim = int(self._env_cost_dim)
+        self.cfg.cost_limits = self._expand_tuple(tuple(self.cfg.cost_limits), target_dim, "cost_limits")
+        self.cfg.cost_scales = self._expand_tuple(tuple(self.cfg.cost_scales), target_dim, "cost_scales")
 
     def reset(self, seed: Optional[int] = None):
         obs, info = self.env.reset(seed=seed)
@@ -89,6 +130,7 @@ class RewardCostWrapper:
             for fn, scale in zip(self.cost_fns, self.cfg.cost_scales):
                 costs_list.append(float(fn(info)) * float(scale))
             costs = np.asarray(costs_list, dtype=np.float32)
+
         info["reward"] = float(r)
         info["reward_unshaped"] = float(r)
         info["reward_shaped"] = float(r)
